@@ -13,6 +13,9 @@
                   modeler:executionPlatform="Camunda Cloud"
                   modeler:executionPlatformVersion="8.8.0">
 
+  <bpmn:error id="Error_SanctionsHit" name="Sanctions hit" errorCode="SANCTIONS_HIT" />
+  <bpmn:error id="Error_DocumentDiscrepancy" name="Document discrepancy" errorCode="DOCUMENT_DISCREPANCY" />
+
   <bpmn:process id="loc-issuance" name="Letter of Credit Issuance" isExecutable="true">
     <bpmn:documentation>Educational trade finance workflow inspired by Commerzbank's Letter of Credit services. Not connected to any real banking system; external checks are mocked.</bpmn:documentation>
 
@@ -47,8 +50,22 @@
         <zeebe:assignmentDefinition candidateGroups="trade-operations" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ValidNo</bpmn:incoming>
+      <bpmn:incoming>Flow_DocumentDiscrepancy</bpmn:incoming>
       <bpmn:outgoing>Flow_CorrectionDone</bpmn:outgoing>
     </bpmn:userTask>
+
+    <!-- TIMER boundary (interrupting): correction not done in time -> reject -->
+    <bpmn:boundaryEvent id="Boundary_CorrectionTimeout" name="Correction deadline passed" attachedToRef="Task_CorrectApplication">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="=&quot;Application was not corrected within the allowed time&quot;" target="rejectionReason" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_CorrectionTimedOut</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_CorrectionTimeout">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">=if correctionTimeout != null then correctionTimeout else "PT48H"</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
 
     <!-- ===================== Eligibility ===================== -->
     <bpmn:serviceTask id="Task_CheckEligibility" name="Check customer eligibility">
@@ -65,14 +82,32 @@
       <bpmn:outgoing>Flow_EligibleNo</bpmn:outgoing>
     </bpmn:exclusiveGateway>
 
-    <!-- ===================== Compliance (call activity, completed in Step 4) ===================== -->
+    <!-- ===================== Compliance: CALL ACTIVITY ===================== -->
     <bpmn:callActivity id="CallActivity_ComplianceScreening" name="Perform compliance screening (sanctions + AML)">
       <bpmn:extensionElements>
-        <zeebe:calledElement processId="loc-compliance-screening" propagateAllChildVariables="true" />
+        <zeebe:calledElement processId="loc-compliance-screening" propagateAllChildVariables="false" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=[{name: applicantName, country: applicantCountry, role: &quot;APPLICANT&quot;}, {name: beneficiaryName, country: beneficiaryCountry, role: &quot;BENEFICIARY&quot;}, {name: beneficiaryBankName, country: beneficiaryCountry, role: &quot;ADVISING_BANK&quot;}]" target="parties" />
+          <zeebe:output source="=complianceStatus" target="complianceStatus" />
+          <zeebe:output source="=sanctionsResults" target="sanctionsResults" />
+          <zeebe:output source="=amlRiskScore" target="amlRiskScore" />
+          <zeebe:output source="=rejectionReason" target="rejectionReason" />
+        </zeebe:ioMapping>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_EligibleYes</bpmn:incoming>
       <bpmn:outgoing>Flow_ToGatewayCompliance</bpmn:outgoing>
     </bpmn:callActivity>
+
+    <!-- ERROR boundary: thrown by the called process when a party is on a sanctions list -->
+    <bpmn:boundaryEvent id="Boundary_SanctionsHit" name="Sanctions hit" attachedToRef="CallActivity_ComplianceScreening">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="=&quot;Sanctions screening found a match for one of the trade parties&quot;" target="rejectionReason" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_SanctionsHit</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDef_SanctionsHitCatch" errorRef="Error_SanctionsHit" />
+    </bpmn:boundaryEvent>
 
     <bpmn:exclusiveGateway id="Gateway_ComplianceResult" name="Compliance clear?">
       <bpmn:incoming>Flow_ToGatewayCompliance</bpmn:incoming>
@@ -80,8 +115,14 @@
       <bpmn:outgoing>Flow_ComplianceRejected</bpmn:outgoing>
     </bpmn:exclusiveGateway>
 
-    <!-- ===================== Document verification (embedded subprocess) ===================== -->
+    <!-- ===================== Documents: EMBEDDED SUBPROCESS ===================== -->
     <bpmn:subProcess id="SubProcess_VerifyDocuments" name="Verify trade documents">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="=documentResults" target="documentResults" />
+          <zeebe:output source="=every result in documentResults satisfies result.valid = true" target="documentsVerified" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
       <bpmn:incoming>Flow_ComplianceClear</bpmn:incoming>
       <bpmn:outgoing>Flow_ToCreditAssessment</bpmn:outgoing>
 
@@ -89,26 +130,77 @@
         <bpmn:outgoing>Flow_ToVerifyDocument</bpmn:outgoing>
       </bpmn:startEvent>
 
+      <!-- SEQUENTIAL multi-instance: one document after the other -->
       <bpmn:serviceTask id="Task_VerifyDocument" name="Verify trade document">
         <bpmn:extensionElements>
           <zeebe:taskDefinition type="verify-trade-document" retries="3" />
         </bpmn:extensionElements>
         <bpmn:incoming>Flow_ToVerifyDocument</bpmn:incoming>
-        <bpmn:outgoing>Flow_ToDocumentsEnd</bpmn:outgoing>
+        <bpmn:outgoing>Flow_ToGatewayDocuments</bpmn:outgoing>
+        <bpmn:multiInstanceLoopCharacteristics isSequential="true">
+          <bpmn:extensionElements>
+            <zeebe:loopCharacteristics inputCollection="=tradeDocuments" inputElement="document" outputCollection="documentResults" outputElement="=documentResult" />
+          </bpmn:extensionElements>
+        </bpmn:multiInstanceLoopCharacteristics>
       </bpmn:serviceTask>
 
+      <bpmn:exclusiveGateway id="Gateway_DocumentsValid" name="All documents valid?">
+        <bpmn:incoming>Flow_ToGatewayDocuments</bpmn:incoming>
+        <bpmn:outgoing>Flow_DocumentsOk</bpmn:outgoing>
+        <bpmn:outgoing>Flow_DocumentsNotOk</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+
       <bpmn:endEvent id="EndEvent_DocumentsVerified" name="Documents verified">
-        <bpmn:incoming>Flow_ToDocumentsEnd</bpmn:incoming>
+        <bpmn:incoming>Flow_DocumentsOk</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:endEvent id="End_DocumentDiscrepancy" name="Discrepancy found">
+        <bpmn:incoming>Flow_DocumentsNotOk</bpmn:incoming>
+        <bpmn:errorEventDefinition id="ErrorDef_DocumentDiscrepancyThrow" errorRef="Error_DocumentDiscrepancy" />
       </bpmn:endEvent>
 
       <bpmn:sequenceFlow id="Flow_ToVerifyDocument" sourceRef="StartEvent_Documents" targetRef="Task_VerifyDocument" />
-      <bpmn:sequenceFlow id="Flow_ToDocumentsEnd" sourceRef="Task_VerifyDocument" targetRef="EndEvent_DocumentsVerified" />
+      <bpmn:sequenceFlow id="Flow_ToGatewayDocuments" sourceRef="Task_VerifyDocument" targetRef="Gateway_DocumentsValid" />
+      <bpmn:sequenceFlow id="Flow_DocumentsOk" name="Yes" sourceRef="Gateway_DocumentsValid" targetRef="EndEvent_DocumentsVerified">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=every result in documentResults satisfies result.valid = true</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_DocumentsNotOk" name="No" sourceRef="Gateway_DocumentsValid" targetRef="End_DocumentDiscrepancy">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=some result in documentResults satisfies result.valid = false</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
     </bpmn:subProcess>
 
-    <!-- ===================== Credit & approval ===================== -->
-    <bpmn:serviceTask id="Task_CreditAssessment" name="Perform credit assessment">
+    <!-- ERROR boundary on the subprocess: discrepancy -> back to correction -->
+    <bpmn:boundaryEvent id="Boundary_DocumentDiscrepancy" name="Document discrepancy" attachedToRef="SubProcess_VerifyDocuments">
       <bpmn:extensionElements>
-        <zeebe:taskDefinition type="credit-assessment" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:output source="=&quot;One or more trade documents have discrepancies&quot;" target="correctionReason" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_DocumentDiscrepancy</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDef_DocumentDiscrepancyCatch" errorRef="Error_DocumentDiscrepancy" />
+    </bpmn:boundaryEvent>
+
+    <!-- ===================== Credit: REST CONNECTOR ===================== -->
+    <bpmn:serviceTask id="Task_CreditAssessment" name="Perform credit assessment" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="noAuth" target="authentication.type" />
+          <zeebe:input source="POST" target="method" />
+          <zeebe:input source="http://localhost:8081/api/mock/credit-bureau/assessments" target="url" />
+          <zeebe:input source="={&quot;Content-Type&quot;: &quot;application/json&quot;}" target="headers" />
+          <zeebe:input source="false" target="storeResponse" />
+          <zeebe:input source="20" target="connectionTimeoutInSeconds" />
+          <zeebe:input source="20" target="readTimeoutInSeconds" />
+          <zeebe:input source="={applicationId: applicationId, customerId: customerId, amount: amount, currency: currency, customerRiskRating: customerRiskRating}" target="body" />
+          <zeebe:input source="false" target="ignoreNullValues" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="elementTemplateVersion" value="12" />
+          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.HttpJson.v2" />
+          <zeebe:header key="resultExpression" value="={creditScore: response.body.creditScore, riskLevel: response.body.riskLevel, creditApproved: response.body.creditApproved, rejectionReason: if response.body.creditApproved then null else &quot;Credit assessment declined (risk level &quot; + response.body.riskLevel + &quot;)&quot;}" />
+          <zeebe:header key="retryBackoff" value="PT10S" />
+        </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToCreditAssessment</bpmn:incoming>
       <bpmn:outgoing>Flow_ToGatewayCredit</bpmn:outgoing>
@@ -120,14 +212,42 @@
       <bpmn:outgoing>Flow_CreditNo</bpmn:outgoing>
     </bpmn:exclusiveGateway>
 
+    <!-- ===================== Approval + TIMER escalation ===================== -->
     <bpmn:userTask id="Task_ManagerApproval" name="Obtain manager approval">
       <bpmn:extensionElements>
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="credit-managers" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_CreditYes</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToGatewayApproval</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToMergeApproval</bpmn:outgoing>
     </bpmn:userTask>
+
+    <bpmn:boundaryEvent id="Boundary_ApprovalTimeout" name="Approval overdue" attachedToRef="Task_ManagerApproval">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="=true" target="approvalEscalated" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ToEscalatedApproval</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_ApprovalTimeout">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">=if approvalTimeout != null then approvalTimeout else "PT24H"</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:userTask id="Task_EscalatedApproval" name="Escalated approval (senior manager)">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="senior-managers" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToEscalatedApproval</bpmn:incoming>
+      <bpmn:outgoing>Flow_EscalatedToMerge</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_MergeApproval">
+      <bpmn:incoming>Flow_ToMergeApproval</bpmn:incoming>
+      <bpmn:incoming>Flow_EscalatedToMerge</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayApproval</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
 
     <bpmn:exclusiveGateway id="Gateway_ApprovalDecision" name="Manager decision?">
       <bpmn:incoming>Flow_ToGatewayApproval</bpmn:incoming>
@@ -173,9 +293,30 @@
       <bpmn:outgoing>Flow_ToNotifyCustomer</bpmn:outgoing>
     </bpmn:serviceTask>
 
-    <bpmn:serviceTask id="Task_NotifyCustomer" name="Notify customer">
+    <!-- EMAIL CONNECTOR: success notification -->
+    <bpmn:serviceTask id="Task_NotifyCustomer" name="Notify customer" zeebe:modelerTemplate="io.camunda.connectors.email.v1" zeebe:modelerTemplateVersion="3">
       <bpmn:extensionElements>
-        <zeebe:taskDefinition type="notify-customer" retries="3" />
+        <zeebe:taskDefinition type="io.camunda:email:1" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="simple" target="authentication.type" />
+          <zeebe:input source="loc-workflow" target="authentication.username" />
+          <zeebe:input source="mailpit" target="authentication.password" />
+          <zeebe:input source="smtp" target="protocol" />
+          <zeebe:input source="localhost" target="data.smtpConfig.smtpHost" />
+          <zeebe:input source="1025" target="data.smtpConfig.smtpPort" />
+          <zeebe:input source="NONE" target="data.smtpConfig.smtpCryptographicProtocol" />
+          <zeebe:input source="sendEmailSmtp" target="data.smtpActionDiscriminator" />
+          <zeebe:input source="trade-finance@loc-demo.local" target="data.smtpAction.from" />
+          <zeebe:input source="=applicantEmail" target="data.smtpAction.to" />
+          <zeebe:input source="=&quot;Your Letter of Credit &quot; + locNumber + &quot; has been issued&quot;" target="data.smtpAction.subject" />
+          <zeebe:input source="PLAIN" target="data.smtpAction.contentType" />
+          <zeebe:input source="=&quot;Dear &quot; + applicantName + &quot;,\n\nYour Letter of Credit &quot; + locNumber + &quot; for &quot; + string(amount) + &quot; &quot; + currency + &quot; in favour of &quot; + beneficiaryName + &quot; was issued on &quot; + issueDate + &quot;.\n\nKind regards,\nTrade Finance Operations (demo system)&quot;" target="data.smtpAction.body" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="elementTemplateVersion" value="3" />
+          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.email.v1" />
+          <zeebe:header key="retryBackoff" value="PT10S" />
+        </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToNotifyCustomer</bpmn:incoming>
       <bpmn:outgoing>Flow_ToEndIssued</bpmn:outgoing>
@@ -191,6 +332,8 @@
       <bpmn:incoming>Flow_ComplianceRejected</bpmn:incoming>
       <bpmn:incoming>Flow_CreditNo</bpmn:incoming>
       <bpmn:incoming>Flow_ApprovalRejected</bpmn:incoming>
+      <bpmn:incoming>Flow_SanctionsHit</bpmn:incoming>
+      <bpmn:incoming>Flow_CorrectionTimedOut</bpmn:incoming>
       <bpmn:outgoing>Flow_ToRecordRejection</bpmn:outgoing>
     </bpmn:exclusiveGateway>
 
@@ -202,9 +345,30 @@
       <bpmn:outgoing>Flow_ToNotifyRejection</bpmn:outgoing>
     </bpmn:serviceTask>
 
-    <bpmn:serviceTask id="Task_NotifyRejection" name="Notify customer of rejection">
+    <!-- EMAIL CONNECTOR: rejection notification -->
+    <bpmn:serviceTask id="Task_NotifyRejection" name="Notify customer of rejection" zeebe:modelerTemplate="io.camunda.connectors.email.v1" zeebe:modelerTemplateVersion="3">
       <bpmn:extensionElements>
-        <zeebe:taskDefinition type="notify-rejection" retries="3" />
+        <zeebe:taskDefinition type="io.camunda:email:1" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="simple" target="authentication.type" />
+          <zeebe:input source="loc-workflow" target="authentication.username" />
+          <zeebe:input source="mailpit" target="authentication.password" />
+          <zeebe:input source="smtp" target="protocol" />
+          <zeebe:input source="localhost" target="data.smtpConfig.smtpHost" />
+          <zeebe:input source="1025" target="data.smtpConfig.smtpPort" />
+          <zeebe:input source="NONE" target="data.smtpConfig.smtpCryptographicProtocol" />
+          <zeebe:input source="sendEmailSmtp" target="data.smtpActionDiscriminator" />
+          <zeebe:input source="trade-finance@loc-demo.local" target="data.smtpAction.from" />
+          <zeebe:input source="=applicantEmail" target="data.smtpAction.to" />
+          <zeebe:input source="=&quot;Your Letter of Credit application &quot; + applicationId + &quot; was not approved&quot;" target="data.smtpAction.subject" />
+          <zeebe:input source="PLAIN" target="data.smtpAction.contentType" />
+          <zeebe:input source="=&quot;Dear &quot; + applicantName + &quot;,\n\nWe are unable to issue a Letter of Credit for application &quot; + applicationId + &quot;.\nReason: &quot; + (if rejectionReason != null then rejectionReason else &quot;not specified&quot;) + &quot;\n\nKind regards,\nTrade Finance Operations (demo system)&quot;" target="data.smtpAction.body" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="elementTemplateVersion" value="3" />
+          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.email.v1" />
+          <zeebe:header key="retryBackoff" value="PT10S" />
+        </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToNotifyRejection</bpmn:incoming>
       <bpmn:outgoing>Flow_ToEndRejected</bpmn:outgoing>
@@ -225,6 +389,7 @@
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=applicationValid = false</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_CorrectionDone" sourceRef="Task_CorrectApplication" targetRef="Gateway_MergeValidation" />
+    <bpmn:sequenceFlow id="Flow_CorrectionTimedOut" sourceRef="Boundary_CorrectionTimeout" targetRef="Gateway_MergeRejection" />
 
     <bpmn:sequenceFlow id="Flow_ToGatewayEligible" sourceRef="Task_CheckEligibility" targetRef="Gateway_CustomerEligible" />
     <bpmn:sequenceFlow id="Flow_EligibleYes" name="Yes" sourceRef="Gateway_CustomerEligible" targetRef="CallActivity_ComplianceScreening">
@@ -235,6 +400,7 @@
     </bpmn:sequenceFlow>
 
     <bpmn:sequenceFlow id="Flow_ToGatewayCompliance" sourceRef="CallActivity_ComplianceScreening" targetRef="Gateway_ComplianceResult" />
+    <bpmn:sequenceFlow id="Flow_SanctionsHit" sourceRef="Boundary_SanctionsHit" targetRef="Gateway_MergeRejection" />
     <bpmn:sequenceFlow id="Flow_ComplianceClear" name="Clear" sourceRef="Gateway_ComplianceResult" targetRef="SubProcess_VerifyDocuments">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=complianceStatus = "CLEAR"</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
@@ -242,6 +408,7 @@
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=complianceStatus != "CLEAR"</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
 
+    <bpmn:sequenceFlow id="Flow_DocumentDiscrepancy" sourceRef="Boundary_DocumentDiscrepancy" targetRef="Task_CorrectApplication" />
     <bpmn:sequenceFlow id="Flow_ToCreditAssessment" sourceRef="SubProcess_VerifyDocuments" targetRef="Task_CreditAssessment" />
     <bpmn:sequenceFlow id="Flow_ToGatewayCredit" sourceRef="Task_CreditAssessment" targetRef="Gateway_CreditDecision" />
     <bpmn:sequenceFlow id="Flow_CreditYes" name="Yes" sourceRef="Gateway_CreditDecision" targetRef="Task_ManagerApproval">
@@ -251,7 +418,10 @@
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=creditApproved = false</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
 
-    <bpmn:sequenceFlow id="Flow_ToGatewayApproval" sourceRef="Task_ManagerApproval" targetRef="Gateway_ApprovalDecision" />
+    <bpmn:sequenceFlow id="Flow_ToMergeApproval" sourceRef="Task_ManagerApproval" targetRef="Gateway_MergeApproval" />
+    <bpmn:sequenceFlow id="Flow_ToEscalatedApproval" sourceRef="Boundary_ApprovalTimeout" targetRef="Task_EscalatedApproval" />
+    <bpmn:sequenceFlow id="Flow_EscalatedToMerge" sourceRef="Task_EscalatedApproval" targetRef="Gateway_MergeApproval" />
+    <bpmn:sequenceFlow id="Flow_ToGatewayApproval" sourceRef="Gateway_MergeApproval" targetRef="Gateway_ApprovalDecision" />
     <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_ApprovalDecision" targetRef="Gateway_MergeDraft">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approvalDecision = "APPROVED"</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
@@ -296,6 +466,9 @@
       <bpmndi:BPMNShape id="Task_CorrectApplication_di" bpmnElement="Task_CorrectApplication">
         <dc:Bounds x="450" y="20" width="100" height="80" />
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_CorrectionTimeout_di" bpmnElement="Boundary_CorrectionTimeout">
+        <dc:Bounds x="514" y="82" width="36" height="36" />
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_CheckEligibility_di" bpmnElement="Task_CheckEligibility">
         <dc:Bounds x="580" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
@@ -305,68 +478,89 @@
       <bpmndi:BPMNShape id="CallActivity_ComplianceScreening_di" bpmnElement="CallActivity_ComplianceScreening">
         <dc:Bounds x="840" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_SanctionsHit_di" bpmnElement="Boundary_SanctionsHit">
+        <dc:Bounds x="872" y="222" width="36" height="36" />
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_ComplianceResult_di" bpmnElement="Gateway_ComplianceResult" isMarkerVisible="true">
         <dc:Bounds x="995" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
 
       <bpmndi:BPMNShape id="SubProcess_VerifyDocuments_di" bpmnElement="SubProcess_VerifyDocuments" isExpanded="true">
-        <dc:Bounds x="1100" y="110" width="350" height="180" />
+        <dc:Bounds x="1100" y="110" width="430" height="180" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="StartEvent_Documents_di" bpmnElement="StartEvent_Documents">
         <dc:Bounds x="1132" y="182" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_VerifyDocument_di" bpmnElement="Task_VerifyDocument">
-        <dc:Bounds x="1225" y="160" width="100" height="80" />
+        <dc:Bounds x="1200" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_DocumentsValid_di" bpmnElement="Gateway_DocumentsValid" isMarkerVisible="true">
+        <dc:Bounds x="1345" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_DocumentsVerified_di" bpmnElement="EndEvent_DocumentsVerified">
-        <dc:Bounds x="1382" y="182" width="36" height="36" />
+        <dc:Bounds x="1452" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_DocumentDiscrepancy_di" bpmnElement="End_DocumentDiscrepancy">
+        <dc:Bounds x="1452" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_DocumentDiscrepancy_di" bpmnElement="Boundary_DocumentDiscrepancy">
+        <dc:Bounds x="1462" y="92" width="36" height="36" />
       </bpmndi:BPMNShape>
 
       <bpmndi:BPMNShape id="Task_CreditAssessment_di" bpmnElement="Task_CreditAssessment">
-        <dc:Bounds x="1510" y="160" width="100" height="80" />
+        <dc:Bounds x="1590" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_CreditDecision_di" bpmnElement="Gateway_CreditDecision" isMarkerVisible="true">
-        <dc:Bounds x="1665" y="175" width="50" height="50" />
+        <dc:Bounds x="1745" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_ManagerApproval_di" bpmnElement="Task_ManagerApproval">
-        <dc:Bounds x="1770" y="160" width="100" height="80" />
+        <dc:Bounds x="1850" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_ApprovalTimeout_di" bpmnElement="Boundary_ApprovalTimeout">
+        <dc:Bounds x="1882" y="222" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_EscalatedApproval_di" bpmnElement="Task_EscalatedApproval">
+        <dc:Bounds x="1850" y="290" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_MergeApproval_di" bpmnElement="Gateway_MergeApproval" isMarkerVisible="true">
+        <dc:Bounds x="2005" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_ApprovalDecision_di" bpmnElement="Gateway_ApprovalDecision" isMarkerVisible="true">
-        <dc:Bounds x="1925" y="175" width="50" height="50" />
+        <dc:Bounds x="2105" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_MergeDraft_di" bpmnElement="Gateway_MergeDraft" isMarkerVisible="true">
-        <dc:Bounds x="2025" y="175" width="50" height="50" />
+        <dc:Bounds x="2205" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_GenerateDraft_di" bpmnElement="Task_GenerateDraft">
-        <dc:Bounds x="2110" y="160" width="100" height="80" />
+        <dc:Bounds x="2290" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_VerifyTerms_di" bpmnElement="Task_VerifyTerms">
-        <dc:Bounds x="2270" y="160" width="100" height="80" />
+        <dc:Bounds x="2450" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Gateway_TermsVerified_di" bpmnElement="Gateway_TermsVerified" isMarkerVisible="true">
-        <dc:Bounds x="2425" y="175" width="50" height="50" />
+        <dc:Bounds x="2605" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_IssueLoC_di" bpmnElement="Task_IssueLoC">
-        <dc:Bounds x="2530" y="160" width="100" height="80" />
+        <dc:Bounds x="2710" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_NotifyCustomer_di" bpmnElement="Task_NotifyCustomer">
-        <dc:Bounds x="2690" y="160" width="100" height="80" />
+        <dc:Bounds x="2870" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_LoCIssued_di" bpmnElement="End_LoCIssued">
-        <dc:Bounds x="2852" y="182" width="36" height="36" />
+        <dc:Bounds x="3032" y="182" width="36" height="36" />
       </bpmndi:BPMNShape>
 
       <bpmndi:BPMNShape id="Gateway_MergeRejection_di" bpmnElement="Gateway_MergeRejection" isMarkerVisible="true">
-        <dc:Bounds x="2025" y="395" width="50" height="50" />
+        <dc:Bounds x="2205" y="395" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_RecordRejection_di" bpmnElement="Task_RecordRejection">
-        <dc:Bounds x="2110" y="380" width="100" height="80" />
+        <dc:Bounds x="2290" y="380" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_NotifyRejection_di" bpmnElement="Task_NotifyRejection">
-        <dc:Bounds x="2270" y="380" width="100" height="80" />
+        <dc:Bounds x="2450" y="380" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_LoCRejected_di" bpmnElement="End_LoCRejected">
-        <dc:Bounds x="2432" y="402" width="36" height="36" />
+        <dc:Bounds x="2612" y="402" width="36" height="36" />
       </bpmndi:BPMNShape>
 
       <!-- Edges -->
@@ -388,6 +582,9 @@
       <bpmndi:BPMNEdge id="Flow_CorrectionDone_di" bpmnElement="Flow_CorrectionDone">
         <di:waypoint x="450" y="60" /><di:waypoint x="260" y="60" /><di:waypoint x="260" y="175" />
       </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CorrectionTimedOut_di" bpmnElement="Flow_CorrectionTimedOut">
+        <di:waypoint x="532" y="118" /><di:waypoint x="532" y="440" /><di:waypoint x="2230" y="440" /><di:waypoint x="2230" y="445" />
+      </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGatewayEligible_di" bpmnElement="Flow_ToGatewayEligible">
         <di:waypoint x="680" y="200" /><di:waypoint x="735" y="200" />
       </bpmndi:BPMNEdge>
@@ -395,73 +592,94 @@
         <di:waypoint x="785" y="200" /><di:waypoint x="840" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_EligibleNo_di" bpmnElement="Flow_EligibleNo">
-        <di:waypoint x="760" y="225" /><di:waypoint x="760" y="420" /><di:waypoint x="2025" y="420" />
+        <di:waypoint x="760" y="225" /><di:waypoint x="760" y="420" /><di:waypoint x="2205" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGatewayCompliance_di" bpmnElement="Flow_ToGatewayCompliance">
         <di:waypoint x="940" y="200" /><di:waypoint x="995" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SanctionsHit_di" bpmnElement="Flow_SanctionsHit">
+        <di:waypoint x="890" y="258" /><di:waypoint x="890" y="420" /><di:waypoint x="2205" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ComplianceClear_di" bpmnElement="Flow_ComplianceClear">
         <di:waypoint x="1045" y="200" /><di:waypoint x="1100" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ComplianceRejected_di" bpmnElement="Flow_ComplianceRejected">
-        <di:waypoint x="1020" y="225" /><di:waypoint x="1020" y="420" /><di:waypoint x="2025" y="420" />
+        <di:waypoint x="1020" y="225" /><di:waypoint x="1020" y="420" /><di:waypoint x="2205" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToVerifyDocument_di" bpmnElement="Flow_ToVerifyDocument">
-        <di:waypoint x="1168" y="200" /><di:waypoint x="1225" y="200" />
+        <di:waypoint x="1168" y="200" /><di:waypoint x="1200" y="200" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToDocumentsEnd_di" bpmnElement="Flow_ToDocumentsEnd">
-        <di:waypoint x="1325" y="200" /><di:waypoint x="1382" y="200" />
+      <bpmndi:BPMNEdge id="Flow_ToGatewayDocuments_di" bpmnElement="Flow_ToGatewayDocuments">
+        <di:waypoint x="1300" y="200" /><di:waypoint x="1345" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DocumentsOk_di" bpmnElement="Flow_DocumentsOk">
+        <di:waypoint x="1395" y="200" /><di:waypoint x="1452" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DocumentsNotOk_di" bpmnElement="Flow_DocumentsNotOk">
+        <di:waypoint x="1370" y="225" /><di:waypoint x="1370" y="260" /><di:waypoint x="1452" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DocumentDiscrepancy_di" bpmnElement="Flow_DocumentDiscrepancy">
+        <di:waypoint x="1480" y="92" /><di:waypoint x="1480" y="60" /><di:waypoint x="550" y="60" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToCreditAssessment_di" bpmnElement="Flow_ToCreditAssessment">
-        <di:waypoint x="1450" y="200" /><di:waypoint x="1510" y="200" />
+        <di:waypoint x="1530" y="200" /><di:waypoint x="1590" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGatewayCredit_di" bpmnElement="Flow_ToGatewayCredit">
-        <di:waypoint x="1610" y="200" /><di:waypoint x="1665" y="200" />
+        <di:waypoint x="1690" y="200" /><di:waypoint x="1745" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_CreditYes_di" bpmnElement="Flow_CreditYes">
-        <di:waypoint x="1715" y="200" /><di:waypoint x="1770" y="200" />
+        <di:waypoint x="1795" y="200" /><di:waypoint x="1850" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_CreditNo_di" bpmnElement="Flow_CreditNo">
-        <di:waypoint x="1690" y="225" /><di:waypoint x="1690" y="420" /><di:waypoint x="2025" y="420" />
+        <di:waypoint x="1770" y="225" /><di:waypoint x="1770" y="420" /><di:waypoint x="2205" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToMergeApproval_di" bpmnElement="Flow_ToMergeApproval">
+        <di:waypoint x="1950" y="200" /><di:waypoint x="2005" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEscalatedApproval_di" bpmnElement="Flow_ToEscalatedApproval">
+        <di:waypoint x="1900" y="258" /><di:waypoint x="1900" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EscalatedToMerge_di" bpmnElement="Flow_EscalatedToMerge">
+        <di:waypoint x="1950" y="330" /><di:waypoint x="2030" y="330" /><di:waypoint x="2030" y="225" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGatewayApproval_di" bpmnElement="Flow_ToGatewayApproval">
-        <di:waypoint x="1870" y="200" /><di:waypoint x="1925" y="200" />
+        <di:waypoint x="2055" y="200" /><di:waypoint x="2105" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
-        <di:waypoint x="1975" y="200" /><di:waypoint x="2025" y="200" />
+        <di:waypoint x="2155" y="200" /><di:waypoint x="2205" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ApprovalRejected_di" bpmnElement="Flow_ApprovalRejected">
-        <di:waypoint x="1950" y="225" /><di:waypoint x="1950" y="420" /><di:waypoint x="2025" y="420" />
+        <di:waypoint x="2130" y="225" /><di:waypoint x="2130" y="420" /><di:waypoint x="2205" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGenerateDraft_di" bpmnElement="Flow_ToGenerateDraft">
-        <di:waypoint x="2075" y="200" /><di:waypoint x="2110" y="200" />
+        <di:waypoint x="2255" y="200" /><di:waypoint x="2290" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToVerifyTerms_di" bpmnElement="Flow_ToVerifyTerms">
-        <di:waypoint x="2210" y="200" /><di:waypoint x="2270" y="200" />
+        <di:waypoint x="2390" y="200" /><di:waypoint x="2450" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToGatewayTerms_di" bpmnElement="Flow_ToGatewayTerms">
-        <di:waypoint x="2370" y="200" /><di:waypoint x="2425" y="200" />
+        <di:waypoint x="2550" y="200" /><di:waypoint x="2605" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_TermsYes_di" bpmnElement="Flow_TermsYes">
-        <di:waypoint x="2475" y="200" /><di:waypoint x="2530" y="200" />
+        <di:waypoint x="2655" y="200" /><di:waypoint x="2710" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_TermsNo_di" bpmnElement="Flow_TermsNo">
-        <di:waypoint x="2450" y="175" /><di:waypoint x="2450" y="90" /><di:waypoint x="2050" y="90" /><di:waypoint x="2050" y="175" />
+        <di:waypoint x="2630" y="175" /><di:waypoint x="2630" y="90" /><di:waypoint x="2230" y="90" /><di:waypoint x="2230" y="175" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToNotifyCustomer_di" bpmnElement="Flow_ToNotifyCustomer">
-        <di:waypoint x="2630" y="200" /><di:waypoint x="2690" y="200" />
+        <di:waypoint x="2810" y="200" /><di:waypoint x="2870" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToEndIssued_di" bpmnElement="Flow_ToEndIssued">
-        <di:waypoint x="2790" y="200" /><di:waypoint x="2852" y="200" />
+        <di:waypoint x="2970" y="200" /><di:waypoint x="3032" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToRecordRejection_di" bpmnElement="Flow_ToRecordRejection">
-        <di:waypoint x="2075" y="420" /><di:waypoint x="2110" y="420" />
+        <di:waypoint x="2255" y="420" /><di:waypoint x="2290" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToNotifyRejection_di" bpmnElement="Flow_ToNotifyRejection">
-        <di:waypoint x="2210" y="420" /><di:waypoint x="2270" y="420" />
+        <di:waypoint x="2390" y="420" /><di:waypoint x="2450" y="420" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToEndRejected_di" bpmnElement="Flow_ToEndRejected">
-        <di:waypoint x="2370" y="420" /><di:waypoint x="2432" y="420" />
+        <di:waypoint x="2550" y="420" /><di:waypoint x="2612" y="420" />
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>

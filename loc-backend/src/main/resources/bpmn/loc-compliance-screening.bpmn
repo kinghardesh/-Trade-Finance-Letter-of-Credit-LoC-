@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_ComplianceScreening"
+                  targetNamespace="http://tradefinance.example/loc"
+                  exporter="Camunda Modeler"
+                  exporterVersion="5.49.0"
+                  modeler:executionPlatform="Camunda Cloud"
+                  modeler:executionPlatformVersion="8.8.0">
+
+  <bpmn:error id="Error_SanctionsHit" name="Sanctions hit" errorCode="SANCTIONS_HIT" />
+
+  <bpmn:process id="loc-compliance-screening" name="LoC Compliance Screening" isExecutable="true">
+    <bpmn:documentation>Called by loc-issuance (call activity). Screens every party of the trade in parallel against (mock) sanctions lists, then performs a (mock) AML review. Throws error SANCTIONS_HIT when any party matches.</bpmn:documentation>
+
+    <bpmn:startEvent id="StartEvent_ComplianceRequested" name="Compliance screening requested">
+      <bpmn:outgoing>Flow_ToScreenParty</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- PARALLEL multi-instance: one job per party, all at the same time -->
+    <bpmn:serviceTask id="Task_ScreenParty" name="Screen party against sanctions lists">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="sanctions-screening" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToScreenParty</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewaySanctions</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=parties" inputElement="party" outputCollection="sanctionsResults" outputElement="=sanctionsResult" />
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+
+    <bpmn:exclusiveGateway id="Gateway_SanctionsMatch" name="Sanctions match found?">
+      <bpmn:incoming>Flow_ToGatewaySanctions</bpmn:incoming>
+      <bpmn:outgoing>Flow_NoMatch</bpmn:outgoing>
+      <bpmn:outgoing>Flow_MatchFound</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:endEvent id="End_SanctionsHit" name="Sanctions hit">
+      <bpmn:incoming>Flow_MatchFound</bpmn:incoming>
+      <bpmn:errorEventDefinition id="ErrorDef_SanctionsHit" errorRef="Error_SanctionsHit" />
+    </bpmn:endEvent>
+
+    <bpmn:serviceTask id="Task_AmlReview" name="Perform AML review">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="aml-review" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:output source="=amlRiskScore" target="amlRiskScore" />
+          <zeebe:output source="=amlFindings" target="amlFindings" />
+          <zeebe:output source="=if amlRiskScore &lt; 70 then &quot;CLEAR&quot; else &quot;REJECTED&quot;" target="complianceStatus" />
+          <zeebe:output source="=if amlRiskScore &lt; 70 then null else &quot;AML review risk score too high (&quot; + string(amlRiskScore) + &quot;)&quot;" target="rejectionReason" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_NoMatch</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToComplianceEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_ComplianceCompleted" name="Screening completed">
+      <bpmn:incoming>Flow_ToComplianceEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_ToScreenParty" sourceRef="StartEvent_ComplianceRequested" targetRef="Task_ScreenParty" />
+    <bpmn:sequenceFlow id="Flow_ToGatewaySanctions" sourceRef="Task_ScreenParty" targetRef="Gateway_SanctionsMatch" />
+    <bpmn:sequenceFlow id="Flow_NoMatch" name="No" sourceRef="Gateway_SanctionsMatch" targetRef="Task_AmlReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=every result in sanctionsResults satisfies result.matchFound = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_MatchFound" name="Yes" sourceRef="Gateway_SanctionsMatch" targetRef="End_SanctionsHit">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=some result in sanctionsResults satisfies result.matchFound = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ToComplianceEnd" sourceRef="Task_AmlReview" targetRef="End_ComplianceCompleted" />
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ComplianceScreening">
+    <bpmndi:BPMNPlane id="BPMNPlane_ComplianceScreening" bpmnElement="loc-compliance-screening">
+      <bpmndi:BPMNShape id="StartEvent_ComplianceRequested_di" bpmnElement="StartEvent_ComplianceRequested">
+        <dc:Bounds x="152" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ScreenParty_di" bpmnElement="Task_ScreenParty">
+        <dc:Bounds x="240" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_SanctionsMatch_di" bpmnElement="Gateway_SanctionsMatch" isMarkerVisible="true">
+        <dc:Bounds x="395" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_SanctionsHit_di" bpmnElement="End_SanctionsHit">
+        <dc:Bounds x="402" y="302" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AmlReview_di" bpmnElement="Task_AmlReview">
+        <dc:Bounds x="500" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ComplianceCompleted_di" bpmnElement="End_ComplianceCompleted">
+        <dc:Bounds x="662" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_ToScreenParty_di" bpmnElement="Flow_ToScreenParty">
+        <di:waypoint x="188" y="200" /><di:waypoint x="240" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewaySanctions_di" bpmnElement="Flow_ToGatewaySanctions">
+        <di:waypoint x="340" y="200" /><di:waypoint x="395" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NoMatch_di" bpmnElement="Flow_NoMatch">
+        <di:waypoint x="445" y="200" /><di:waypoint x="500" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MatchFound_di" bpmnElement="Flow_MatchFound">
+        <di:waypoint x="420" y="225" /><di:waypoint x="420" y="302" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToComplianceEnd_di" bpmnElement="Flow_ToComplianceEnd">
+        <di:waypoint x="600" y="200" /><di:waypoint x="662" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

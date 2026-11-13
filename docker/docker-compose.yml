@@ -1,0 +1,23 @@
+# Local infrastructure for the LoC Issuance project.
+# Camunda itself runs via Camunda 8 Run (c8run.exe), not in this file.
+#
+# Start:  docker compose -f docker/docker-compose.yml up -d
+# Stop:   docker compose -f docker/docker-compose.yml down
+
+name: loc-issuance
+
+services:
+  # Fake SMTP server: catches every email the Email connector sends.
+  # Web inbox: http://localhost:8025   SMTP: localhost:1025 (no TLS)
+  mailpit:
+    image: axllent/mailpit:v1.20.0
+    container_name: loc-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+
+  # PostgreSQL will be added here in Step 7.
