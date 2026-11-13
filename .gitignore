@@ -1,0 +1,17 @@
+# Java / Maven
+target/
+*.class
+*.log
+
+# Node / Vite (frontend)
+node_modules/
+dist/
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
