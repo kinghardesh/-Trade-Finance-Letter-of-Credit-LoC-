@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_LocIssuance"
+                  targetNamespace="http://tradefinance.example/loc"
+                  exporter="Camunda Modeler"
+                  exporterVersion="5.49.0"
+                  modeler:executionPlatform="Camunda Cloud"
+                  modeler:executionPlatformVersion="8.8.0">
+
+  <bpmn:process id="loc-issuance" name="Letter of Credit Issuance" isExecutable="true">
+    <bpmn:documentation>Educational trade finance workflow inspired by Commerzbank's Letter of Credit services. Not connected to any real banking system; external checks are mocked.</bpmn:documentation>
+
+    <!-- ===================== Start & validation ===================== -->
+    <bpmn:startEvent id="StartEvent_ApplicationReceived" name="LoC application received">
+      <bpmn:outgoing>Flow_ToMergeValidation</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:exclusiveGateway id="Gateway_MergeValidation">
+      <bpmn:incoming>Flow_ToMergeValidation</bpmn:incoming>
+      <bpmn:incoming>Flow_CorrectionDone</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToValidate</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_ValidateApplication" name="Validate application details">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="validate-application" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToValidate</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayValid</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:exclusiveGateway id="Gateway_ApplicationValid" name="Application valid?">
+      <bpmn:incoming>Flow_ToGatewayValid</bpmn:incoming>
+      <bpmn:outgoing>Flow_ValidYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ValidNo</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:userTask id="Task_CorrectApplication" name="Correct application">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="trade-operations" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ValidNo</bpmn:incoming>
+      <bpmn:outgoing>Flow_CorrectionDone</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- ===================== Eligibility ===================== -->
+    <bpmn:serviceTask id="Task_CheckEligibility" name="Check customer eligibility">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="check-customer-eligibility" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ValidYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayEligible</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:exclusiveGateway id="Gateway_CustomerEligible" name="Customer eligible?">
+      <bpmn:incoming>Flow_ToGatewayEligible</bpmn:incoming>
+      <bpmn:outgoing>Flow_EligibleYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_EligibleNo</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- ===================== Compliance (call activity, completed in Step 4) ===================== -->
+    <bpmn:callActivity id="CallActivity_ComplianceScreening" name="Perform compliance screening (sanctions + AML)">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="loc-compliance-screening" propagateAllChildVariables="true" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_EligibleYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayCompliance</bpmn:outgoing>
+    </bpmn:callActivity>
+
+    <bpmn:exclusiveGateway id="Gateway_ComplianceResult" name="Compliance clear?">
+      <bpmn:incoming>Flow_ToGatewayCompliance</bpmn:incoming>
+      <bpmn:outgoing>Flow_ComplianceClear</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ComplianceRejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- ===================== Document verification (embedded subprocess) ===================== -->
+    <bpmn:subProcess id="SubProcess_VerifyDocuments" name="Verify trade documents">
+      <bpmn:incoming>Flow_ComplianceClear</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToCreditAssessment</bpmn:outgoing>
+
+      <bpmn:startEvent id="StartEvent_Documents" name="Documents received">
+        <bpmn:outgoing>Flow_ToVerifyDocument</bpmn:outgoing>
+      </bpmn:startEvent>
+
+      <bpmn:serviceTask id="Task_VerifyDocument" name="Verify trade document">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="verify-trade-document" retries="3" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_ToVerifyDocument</bpmn:incoming>
+        <bpmn:outgoing>Flow_ToDocumentsEnd</bpmn:outgoing>
+      </bpmn:serviceTask>
+
+      <bpmn:endEvent id="EndEvent_DocumentsVerified" name="Documents verified">
+        <bpmn:incoming>Flow_ToDocumentsEnd</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:sequenceFlow id="Flow_ToVerifyDocument" sourceRef="StartEvent_Documents" targetRef="Task_VerifyDocument" />
+      <bpmn:sequenceFlow id="Flow_ToDocumentsEnd" sourceRef="Task_VerifyDocument" targetRef="EndEvent_DocumentsVerified" />
+    </bpmn:subProcess>
+
+    <!-- ===================== Credit & approval ===================== -->
+    <bpmn:serviceTask id="Task_CreditAssessment" name="Perform credit assessment">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="credit-assessment" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToCreditAssessment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayCredit</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:exclusiveGateway id="Gateway_CreditDecision" name="Credit approved?">
+      <bpmn:incoming>Flow_ToGatewayCredit</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_CreditNo</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:userTask id="Task_ManagerApproval" name="Obtain manager approval">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="credit-managers" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_CreditYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayApproval</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_ApprovalDecision" name="Manager decision?">
+      <bpmn:incoming>Flow_ToGatewayApproval</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ApprovalRejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- ===================== Draft, terms, issuance ===================== -->
+    <bpmn:exclusiveGateway id="Gateway_MergeDraft">
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
+      <bpmn:incoming>Flow_TermsNo</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGenerateDraft</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_GenerateDraft" name="Generate LoC draft">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="generate-loc-draft" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToGenerateDraft</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToVerifyTerms</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:userTask id="Task_VerifyTerms" name="Verify LoC terms">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="trade-operations" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToVerifyTerms</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToGatewayTerms</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_TermsVerified" name="Terms correct?">
+      <bpmn:incoming>Flow_ToGatewayTerms</bpmn:incoming>
+      <bpmn:outgoing>Flow_TermsYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_TermsNo</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_IssueLoC" name="Issue Letter of Credit">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="issue-loc" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_TermsYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToNotifyCustomer</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_NotifyCustomer" name="Notify customer">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify-customer" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToNotifyCustomer</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToEndIssued</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_LoCIssued" name="LoC issued">
+      <bpmn:incoming>Flow_ToEndIssued</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- ===================== Rejection path ===================== -->
+    <bpmn:exclusiveGateway id="Gateway_MergeRejection">
+      <bpmn:incoming>Flow_EligibleNo</bpmn:incoming>
+      <bpmn:incoming>Flow_ComplianceRejected</bpmn:incoming>
+      <bpmn:incoming>Flow_CreditNo</bpmn:incoming>
+      <bpmn:incoming>Flow_ApprovalRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToRecordRejection</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_RecordRejection" name="Record rejection">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="record-rejection" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToRecordRejection</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToNotifyRejection</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_NotifyRejection" name="Notify customer of rejection">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify-rejection" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToNotifyRejection</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToEndRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_LoCRejected" name="LoC application rejected">
+      <bpmn:incoming>Flow_ToEndRejected</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- ===================== Sequence flows ===================== -->
+    <bpmn:sequenceFlow id="Flow_ToMergeValidation" sourceRef="StartEvent_ApplicationReceived" targetRef="Gateway_MergeValidation" />
+    <bpmn:sequenceFlow id="Flow_ToValidate" sourceRef="Gateway_MergeValidation" targetRef="Task_ValidateApplication" />
+    <bpmn:sequenceFlow id="Flow_ToGatewayValid" sourceRef="Task_ValidateApplication" targetRef="Gateway_ApplicationValid" />
+    <bpmn:sequenceFlow id="Flow_ValidYes" name="Yes" sourceRef="Gateway_ApplicationValid" targetRef="Task_CheckEligibility">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=applicationValid = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ValidNo" name="No" sourceRef="Gateway_ApplicationValid" targetRef="Task_CorrectApplication">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=applicationValid = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_CorrectionDone" sourceRef="Task_CorrectApplication" targetRef="Gateway_MergeValidation" />
+
+    <bpmn:sequenceFlow id="Flow_ToGatewayEligible" sourceRef="Task_CheckEligibility" targetRef="Gateway_CustomerEligible" />
+    <bpmn:sequenceFlow id="Flow_EligibleYes" name="Yes" sourceRef="Gateway_CustomerEligible" targetRef="CallActivity_ComplianceScreening">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=customerEligible = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_EligibleNo" name="No" sourceRef="Gateway_CustomerEligible" targetRef="Gateway_MergeRejection">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=customerEligible = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ToGatewayCompliance" sourceRef="CallActivity_ComplianceScreening" targetRef="Gateway_ComplianceResult" />
+    <bpmn:sequenceFlow id="Flow_ComplianceClear" name="Clear" sourceRef="Gateway_ComplianceResult" targetRef="SubProcess_VerifyDocuments">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=complianceStatus = "CLEAR"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ComplianceRejected" name="Not clear" sourceRef="Gateway_ComplianceResult" targetRef="Gateway_MergeRejection">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=complianceStatus != "CLEAR"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ToCreditAssessment" sourceRef="SubProcess_VerifyDocuments" targetRef="Task_CreditAssessment" />
+    <bpmn:sequenceFlow id="Flow_ToGatewayCredit" sourceRef="Task_CreditAssessment" targetRef="Gateway_CreditDecision" />
+    <bpmn:sequenceFlow id="Flow_CreditYes" name="Yes" sourceRef="Gateway_CreditDecision" targetRef="Task_ManagerApproval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=creditApproved = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_CreditNo" name="No" sourceRef="Gateway_CreditDecision" targetRef="Gateway_MergeRejection">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=creditApproved = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ToGatewayApproval" sourceRef="Task_ManagerApproval" targetRef="Gateway_ApprovalDecision" />
+    <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_ApprovalDecision" targetRef="Gateway_MergeDraft">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approvalDecision = "APPROVED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ApprovalRejected" name="Rejected" sourceRef="Gateway_ApprovalDecision" targetRef="Gateway_MergeRejection">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approvalDecision = "REJECTED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ToGenerateDraft" sourceRef="Gateway_MergeDraft" targetRef="Task_GenerateDraft" />
+    <bpmn:sequenceFlow id="Flow_ToVerifyTerms" sourceRef="Task_GenerateDraft" targetRef="Task_VerifyTerms" />
+    <bpmn:sequenceFlow id="Flow_ToGatewayTerms" sourceRef="Task_VerifyTerms" targetRef="Gateway_TermsVerified" />
+    <bpmn:sequenceFlow id="Flow_TermsYes" name="Yes" sourceRef="Gateway_TermsVerified" targetRef="Task_IssueLoC">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=termsVerified = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_TermsNo" name="No – regenerate draft" sourceRef="Gateway_TermsVerified" targetRef="Gateway_MergeDraft">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=termsVerified = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ToNotifyCustomer" sourceRef="Task_IssueLoC" targetRef="Task_NotifyCustomer" />
+    <bpmn:sequenceFlow id="Flow_ToEndIssued" sourceRef="Task_NotifyCustomer" targetRef="End_LoCIssued" />
+
+    <bpmn:sequenceFlow id="Flow_ToRecordRejection" sourceRef="Gateway_MergeRejection" targetRef="Task_RecordRejection" />
+    <bpmn:sequenceFlow id="Flow_ToNotifyRejection" sourceRef="Task_RecordRejection" targetRef="Task_NotifyRejection" />
+    <bpmn:sequenceFlow id="Flow_ToEndRejected" sourceRef="Task_NotifyRejection" targetRef="End_LoCRejected" />
+  </bpmn:process>
+
+  <!-- ===================== Diagram layout ===================== -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_LocIssuance">
+    <bpmndi:BPMNPlane id="BPMNPlane_LocIssuance" bpmnElement="loc-issuance">
+
+      <bpmndi:BPMNShape id="StartEvent_ApplicationReceived_di" bpmnElement="StartEvent_ApplicationReceived">
+        <dc:Bounds x="152" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_MergeValidation_di" bpmnElement="Gateway_MergeValidation" isMarkerVisible="true">
+        <dc:Bounds x="235" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ValidateApplication_di" bpmnElement="Task_ValidateApplication">
+        <dc:Bounds x="320" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ApplicationValid_di" bpmnElement="Gateway_ApplicationValid" isMarkerVisible="true">
+        <dc:Bounds x="475" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CorrectApplication_di" bpmnElement="Task_CorrectApplication">
+        <dc:Bounds x="450" y="20" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CheckEligibility_di" bpmnElement="Task_CheckEligibility">
+        <dc:Bounds x="580" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CustomerEligible_di" bpmnElement="Gateway_CustomerEligible" isMarkerVisible="true">
+        <dc:Bounds x="735" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_ComplianceScreening_di" bpmnElement="CallActivity_ComplianceScreening">
+        <dc:Bounds x="840" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ComplianceResult_di" bpmnElement="Gateway_ComplianceResult" isMarkerVisible="true">
+        <dc:Bounds x="995" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="SubProcess_VerifyDocuments_di" bpmnElement="SubProcess_VerifyDocuments" isExpanded="true">
+        <dc:Bounds x="1100" y="110" width="350" height="180" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_Documents_di" bpmnElement="StartEvent_Documents">
+        <dc:Bounds x="1132" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_VerifyDocument_di" bpmnElement="Task_VerifyDocument">
+        <dc:Bounds x="1225" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_DocumentsVerified_di" bpmnElement="EndEvent_DocumentsVerified">
+        <dc:Bounds x="1382" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Task_CreditAssessment_di" bpmnElement="Task_CreditAssessment">
+        <dc:Bounds x="1510" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CreditDecision_di" bpmnElement="Gateway_CreditDecision" isMarkerVisible="true">
+        <dc:Bounds x="1665" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ManagerApproval_di" bpmnElement="Task_ManagerApproval">
+        <dc:Bounds x="1770" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ApprovalDecision_di" bpmnElement="Gateway_ApprovalDecision" isMarkerVisible="true">
+        <dc:Bounds x="1925" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_MergeDraft_di" bpmnElement="Gateway_MergeDraft" isMarkerVisible="true">
+        <dc:Bounds x="2025" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_GenerateDraft_di" bpmnElement="Task_GenerateDraft">
+        <dc:Bounds x="2110" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_VerifyTerms_di" bpmnElement="Task_VerifyTerms">
+        <dc:Bounds x="2270" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_TermsVerified_di" bpmnElement="Gateway_TermsVerified" isMarkerVisible="true">
+        <dc:Bounds x="2425" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_IssueLoC_di" bpmnElement="Task_IssueLoC">
+        <dc:Bounds x="2530" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyCustomer_di" bpmnElement="Task_NotifyCustomer">
+        <dc:Bounds x="2690" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_LoCIssued_di" bpmnElement="End_LoCIssued">
+        <dc:Bounds x="2852" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="Gateway_MergeRejection_di" bpmnElement="Gateway_MergeRejection" isMarkerVisible="true">
+        <dc:Bounds x="2025" y="395" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RecordRejection_di" bpmnElement="Task_RecordRejection">
+        <dc:Bounds x="2110" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyRejection_di" bpmnElement="Task_NotifyRejection">
+        <dc:Bounds x="2270" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_LoCRejected_di" bpmnElement="End_LoCRejected">
+        <dc:Bounds x="2432" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <!-- Edges -->
+      <bpmndi:BPMNEdge id="Flow_ToMergeValidation_di" bpmnElement="Flow_ToMergeValidation">
+        <di:waypoint x="188" y="200" /><di:waypoint x="235" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToValidate_di" bpmnElement="Flow_ToValidate">
+        <di:waypoint x="285" y="200" /><di:waypoint x="320" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayValid_di" bpmnElement="Flow_ToGatewayValid">
+        <di:waypoint x="420" y="200" /><di:waypoint x="475" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ValidYes_di" bpmnElement="Flow_ValidYes">
+        <di:waypoint x="525" y="200" /><di:waypoint x="580" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ValidNo_di" bpmnElement="Flow_ValidNo">
+        <di:waypoint x="500" y="175" /><di:waypoint x="500" y="100" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CorrectionDone_di" bpmnElement="Flow_CorrectionDone">
+        <di:waypoint x="450" y="60" /><di:waypoint x="260" y="60" /><di:waypoint x="260" y="175" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayEligible_di" bpmnElement="Flow_ToGatewayEligible">
+        <di:waypoint x="680" y="200" /><di:waypoint x="735" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EligibleYes_di" bpmnElement="Flow_EligibleYes">
+        <di:waypoint x="785" y="200" /><di:waypoint x="840" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EligibleNo_di" bpmnElement="Flow_EligibleNo">
+        <di:waypoint x="760" y="225" /><di:waypoint x="760" y="420" /><di:waypoint x="2025" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayCompliance_di" bpmnElement="Flow_ToGatewayCompliance">
+        <di:waypoint x="940" y="200" /><di:waypoint x="995" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ComplianceClear_di" bpmnElement="Flow_ComplianceClear">
+        <di:waypoint x="1045" y="200" /><di:waypoint x="1100" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ComplianceRejected_di" bpmnElement="Flow_ComplianceRejected">
+        <di:waypoint x="1020" y="225" /><di:waypoint x="1020" y="420" /><di:waypoint x="2025" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToVerifyDocument_di" bpmnElement="Flow_ToVerifyDocument">
+        <di:waypoint x="1168" y="200" /><di:waypoint x="1225" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToDocumentsEnd_di" bpmnElement="Flow_ToDocumentsEnd">
+        <di:waypoint x="1325" y="200" /><di:waypoint x="1382" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToCreditAssessment_di" bpmnElement="Flow_ToCreditAssessment">
+        <di:waypoint x="1450" y="200" /><di:waypoint x="1510" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayCredit_di" bpmnElement="Flow_ToGatewayCredit">
+        <di:waypoint x="1610" y="200" /><di:waypoint x="1665" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditYes_di" bpmnElement="Flow_CreditYes">
+        <di:waypoint x="1715" y="200" /><di:waypoint x="1770" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditNo_di" bpmnElement="Flow_CreditNo">
+        <di:waypoint x="1690" y="225" /><di:waypoint x="1690" y="420" /><di:waypoint x="2025" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayApproval_di" bpmnElement="Flow_ToGatewayApproval">
+        <di:waypoint x="1870" y="200" /><di:waypoint x="1925" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
+        <di:waypoint x="1975" y="200" /><di:waypoint x="2025" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApprovalRejected_di" bpmnElement="Flow_ApprovalRejected">
+        <di:waypoint x="1950" y="225" /><di:waypoint x="1950" y="420" /><di:waypoint x="2025" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGenerateDraft_di" bpmnElement="Flow_ToGenerateDraft">
+        <di:waypoint x="2075" y="200" /><di:waypoint x="2110" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToVerifyTerms_di" bpmnElement="Flow_ToVerifyTerms">
+        <di:waypoint x="2210" y="200" /><di:waypoint x="2270" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToGatewayTerms_di" bpmnElement="Flow_ToGatewayTerms">
+        <di:waypoint x="2370" y="200" /><di:waypoint x="2425" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TermsYes_di" bpmnElement="Flow_TermsYes">
+        <di:waypoint x="2475" y="200" /><di:waypoint x="2530" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TermsNo_di" bpmnElement="Flow_TermsNo">
+        <di:waypoint x="2450" y="175" /><di:waypoint x="2450" y="90" /><di:waypoint x="2050" y="90" /><di:waypoint x="2050" y="175" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToNotifyCustomer_di" bpmnElement="Flow_ToNotifyCustomer">
+        <di:waypoint x="2630" y="200" /><di:waypoint x="2690" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEndIssued_di" bpmnElement="Flow_ToEndIssued">
+        <di:waypoint x="2790" y="200" /><di:waypoint x="2852" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToRecordRejection_di" bpmnElement="Flow_ToRecordRejection">
+        <di:waypoint x="2075" y="420" /><di:waypoint x="2110" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToNotifyRejection_di" bpmnElement="Flow_ToNotifyRejection">
+        <di:waypoint x="2210" y="420" /><di:waypoint x="2270" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToEndRejected_di" bpmnElement="Flow_ToEndRejected">
+        <di:waypoint x="2370" y="420" /><di:waypoint x="2432" y="420" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
