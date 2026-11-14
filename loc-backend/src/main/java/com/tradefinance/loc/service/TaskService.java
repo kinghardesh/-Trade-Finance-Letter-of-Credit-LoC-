@@ -79,11 +79,8 @@ public class TaskService {
         UserTask task = getOpenTask(userTaskKey);
         validateVariables(task.getElementId(), variables);
 
-        // save corrected fields in the database FIRST, so the workflow continues with stored data
-        if (ProcessConstants.TASK_CORRECT_APPLICATION.equals(task.getElementId()) && !variables.isEmpty()) {
-            applicationService.applyCorrections(task.getProcessInstanceKey(), variables);
-        }
-
+        // Corrected fields are copied to the database by the "sync-corrections" end listener
+        // of Task_CorrectApplication (see CorrectionSyncWorker), also when Tasklist is used.
         try {
             camundaClient.newCompleteUserTaskCommand(userTaskKey)
                     .variables(variables)

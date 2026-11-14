@@ -51,7 +51,9 @@
       <bpmn:extensionElements>
         <zeebe:executionListeners>
           <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+          <zeebe:executionListener eventType="end" retries="3" type="sync-corrections" />
         </zeebe:executionListeners>
+        <zeebe:formDefinition formId="loc-correct-application" />
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="trade-operations" />
       </bpmn:extensionElements>
@@ -233,6 +235,7 @@
         <zeebe:executionListeners>
           <zeebe:executionListener eventType="start" retries="3" type="update-status" />
         </zeebe:executionListeners>
+        <zeebe:formDefinition formId="loc-manager-approval" />
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="credit-managers" />
       </bpmn:extensionElements>
@@ -257,6 +260,7 @@
         <zeebe:executionListeners>
           <zeebe:executionListener eventType="start" retries="3" type="update-status" />
         </zeebe:executionListeners>
+        <zeebe:formDefinition formId="loc-manager-approval" />
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="senior-managers" />
       </bpmn:extensionElements>
@@ -296,6 +300,7 @@
 
     <bpmn:userTask id="Task_VerifyTerms" name="Verify LoC terms">
       <bpmn:extensionElements>
+        <zeebe:formDefinition formId="loc-verify-terms" />
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="trade-operations" />
       </bpmn:extensionElements>

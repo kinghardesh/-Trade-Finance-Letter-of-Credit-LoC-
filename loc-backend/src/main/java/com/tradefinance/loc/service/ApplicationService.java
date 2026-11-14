@@ -165,10 +165,14 @@ public class ApplicationService {
         return "LC-%d-%06d".formatted(Year.now().getValue(), repository.nextLocNumber());
     }
 
-    /** Copies corrected fields from the "Correct application" task into the stored application. */
+    /**
+     * Copies corrected fields from the "Correct application" task into the stored application.
+     * Called by the end listener of that task, so it works whether the task was completed
+     * in the React app (our API) or in Camunda Tasklist.
+     */
     @Transactional
-    public void applyCorrections(Long processInstanceKey, Map<String, Object> corrections) {
-        repository.findByProcessInstanceKey(processInstanceKey).ifPresent(app -> {
+    public void applyCorrections(String applicationId, Map<String, Object> corrections) {
+        repository.findById(applicationId).ifPresent(app -> {
             Map<String, Object> merged = new LinkedHashMap<>(toProcessVariables(app));
             merged.putAll(corrections);
             LocApplication corrected = objectMapper.convertValue(merged, LocApplication.class);

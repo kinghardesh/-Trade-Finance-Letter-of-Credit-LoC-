@@ -1,0 +1,131 @@
+{
+  "id": "loc-correct-application",
+  "type": "default",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.8.0",
+  "schemaVersion": 16,
+  "components": [
+    {
+      "id": "Text_CorrectionHeader",
+      "type": "text",
+      "text": "### Correct application {{applicationId}}\n\nFix the fields below and submit — the application is then validated again.\n\n{{#if correctionReason}}**Reason:** {{correctionReason}}\n\n{{/if}}{{#if validationErrors}}**Validation errors:**\n\n{{#loop validationErrors}}- {{this}}\n{{/loop}}{{/if}}"
+    },
+    {
+      "id": "Field_ApplicantName",
+      "type": "textfield",
+      "key": "applicantName",
+      "label": "Applicant name",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_ApplicantEmail",
+      "type": "textfield",
+      "key": "applicantEmail",
+      "label": "Applicant email",
+      "validate": { "required": true, "validationType": "email" }
+    },
+    {
+      "id": "Field_ApplicantCountry",
+      "type": "textfield",
+      "key": "applicantCountry",
+      "label": "Applicant country (ISO, e.g. DE)",
+      "validate": { "required": true, "pattern": "^[A-Z]{2}$" }
+    },
+    {
+      "id": "Field_BeneficiaryName",
+      "type": "textfield",
+      "key": "beneficiaryName",
+      "label": "Beneficiary name",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_BeneficiaryCountry",
+      "type": "textfield",
+      "key": "beneficiaryCountry",
+      "label": "Beneficiary country (ISO, e.g. CN)",
+      "validate": { "required": true, "pattern": "^[A-Z]{2}$" }
+    },
+    {
+      "id": "Field_BeneficiaryBankName",
+      "type": "textfield",
+      "key": "beneficiaryBankName",
+      "label": "Advising bank",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_Amount",
+      "type": "number",
+      "key": "amount",
+      "label": "Amount",
+      "validate": { "required": true, "min": 1 }
+    },
+    {
+      "id": "Field_Currency",
+      "type": "textfield",
+      "key": "currency",
+      "label": "Currency (ISO, e.g. EUR)",
+      "validate": { "required": true, "pattern": "^[A-Z]{3}$" }
+    },
+    {
+      "id": "Field_GoodsDescription",
+      "type": "textarea",
+      "key": "goodsDescription",
+      "label": "Goods description",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_LatestShipmentDate",
+      "type": "datetime",
+      "key": "latestShipmentDate",
+      "subtype": "date",
+      "dateLabel": "Latest shipment date",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_ExpiryDate",
+      "type": "datetime",
+      "key": "expiryDate",
+      "subtype": "date",
+      "dateLabel": "Expiry date (at least 21 days after shipment)",
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_TradeDocuments",
+      "type": "dynamiclist",
+      "path": "tradeDocuments",
+      "label": "Trade documents",
+      "isRepeating": true,
+      "allowAddRemove": true,
+      "defaultRepetitions": 1,
+      "components": [
+        {
+          "id": "Field_DocumentType",
+          "type": "select",
+          "key": "documentType",
+          "label": "Document type",
+          "values": [
+            { "label": "Commercial invoice", "value": "COMMERCIAL_INVOICE" },
+            { "label": "Bill of lading", "value": "BILL_OF_LADING" },
+            { "label": "Packing list", "value": "PACKING_LIST" },
+            { "label": "Certificate of origin", "value": "CERTIFICATE_OF_ORIGIN" },
+            { "label": "Insurance certificate", "value": "INSURANCE_CERTIFICATE" }
+          ],
+          "validate": { "required": true }
+        },
+        {
+          "id": "Field_DocumentReference",
+          "type": "textfield",
+          "key": "documentReference",
+          "label": "Reference",
+          "validate": { "required": true }
+        },
+        {
+          "id": "Field_FileName",
+          "type": "textfield",
+          "key": "fileName",
+          "label": "File name"
+        }
+      ]
+    }
+  ]
+}

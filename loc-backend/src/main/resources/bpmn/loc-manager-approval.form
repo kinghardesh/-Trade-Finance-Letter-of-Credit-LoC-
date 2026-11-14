@@ -1,0 +1,38 @@
+{
+  "id": "loc-manager-approval",
+  "type": "default",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.8.0",
+  "schemaVersion": 16,
+  "components": [
+    {
+      "id": "Text_ApprovalSummary",
+      "type": "text",
+      "text": "### Letter of Credit approval\n\n{{#if approvalEscalated}}**⚠ Escalated:** the credit manager did not decide in time.\n\n{{/if}}**Application:** {{applicationId}}\n\n**Applicant:** {{applicantName}} ({{applicantCountry}})\n\n**Beneficiary:** {{beneficiaryName}} ({{beneficiaryCountry}}), advising bank {{beneficiaryBankName}}\n\n**Amount:** {{amount}} {{currency}}\n\n**Goods:** {{goodsDescription}}\n\n**Shipment / expiry:** {{latestShipmentDate}} / {{expiryDate}}"
+    },
+    {
+      "id": "Text_RiskSummary",
+      "type": "text",
+      "text": "#### Risk assessment\n\n| Check | Result |\n|---|---|\n| Customer risk rating | {{customerRiskRating}} |\n| Compliance | {{complianceStatus}} (AML score {{amlRiskScore}}) |\n| Credit score | {{creditScore}} ({{riskLevel}}) |"
+    },
+    {
+      "id": "Field_ApprovalDecision",
+      "type": "radio",
+      "key": "approvalDecision",
+      "label": "Decision",
+      "values": [
+        { "label": "Approve", "value": "APPROVED" },
+        { "label": "Reject", "value": "REJECTED" }
+      ],
+      "validate": { "required": true }
+    },
+    {
+      "id": "Field_ApproverComments",
+      "type": "textarea",
+      "key": "approverComments",
+      "label": "Comments",
+      "description": "Required when rejecting; included in the rejection email.",
+      "validate": { "maxLength": 1000 }
+    }
+  ]
+}

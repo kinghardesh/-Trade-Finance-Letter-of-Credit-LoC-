@@ -1,0 +1,34 @@
+{
+  "id": "loc-verify-terms",
+  "type": "default",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.8.0",
+  "schemaVersion": 16,
+  "components": [
+    {
+      "id": "Text_DraftHeader",
+      "type": "text",
+      "text": "### Verify LoC terms\n\n**Draft:** {{draftReference}} (version {{draftVersion}})\n\nCheck the draft wording against the approved application before the Letter of Credit is issued."
+    },
+    {
+      "id": "Text_DraftWording",
+      "type": "text",
+      "text": "```\n{{draftText}}\n```"
+    },
+    {
+      "id": "Field_TermsVerified",
+      "type": "checkbox",
+      "key": "termsVerified",
+      "label": "Terms are correct — issue the Letter of Credit",
+      "description": "Untick to send the draft back for regeneration.",
+      "defaultValue": true
+    },
+    {
+      "id": "Field_TermsComments",
+      "type": "textarea",
+      "key": "termsComments",
+      "label": "Comments",
+      "validate": { "maxLength": 1000 }
+    }
+  ]
+}

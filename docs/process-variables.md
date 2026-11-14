@@ -133,6 +133,19 @@ Response: { "creditScore": 742, "riskLevel": "LOW", "creditApproved": true }
 | Escalated approval (senior manager) | `Task_EscalatedApproval` | `senior-managers` | `approvalDecision`, `approverComments` |
 | Verify LoC terms | `Task_VerifyTerms` | `trade-operations` | `termsVerified`, `termsComments` |
 
+### Camunda Forms (Tasklist)
+
+Deployed automatically by the backend together with the BPMN files.
+
+| Form id | File | Used by |
+|---|---|---|
+| `loc-correct-application` | `bpmn/loc-correct-application.form` | `Task_CorrectApplication` — prefilled, editable application fields + reasons |
+| `loc-manager-approval` | `bpmn/loc-manager-approval.form` | `Task_ManagerApproval`, `Task_EscalatedApproval` — summary, risk table, `approvalDecision`, `approverComments` |
+| `loc-verify-terms` | `bpmn/loc-verify-terms.form` | `Task_VerifyTerms` — `draftText`, `termsVerified` (checkbox), `termsComments` |
+
+An **end execution listener** (`sync-corrections`) on `Task_CorrectApplication` copies the corrected
+fields into PostgreSQL, whether the task was completed in Tasklist or through the backend API.
+
 ### Boundary events
 
 | Name | Element id | Type | Attached to | Effect |
