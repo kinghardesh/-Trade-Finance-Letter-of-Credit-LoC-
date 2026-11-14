@@ -7,6 +7,7 @@ import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -34,11 +35,77 @@ public class ApplicationService {
     private final ApplicationRepository repository;
     private final CamundaClient camundaClient;
     private final ObjectMapper objectMapper;
+    private final String creditBureauUrl;
 
-    public ApplicationService(ApplicationRepository repository, CamundaClient camundaClient, ObjectMapper objectMapper) {
+    public ApplicationService(ApplicationRepository repository, CamundaClient camundaClient, ObjectMapper objectMapper,
+                              @Value("${loc.credit-bureau.url}") String creditBureauUrl) {
         this.repository = repository;
         this.camundaClient = camundaClient;
         this.objectMapper = objectMapper;
+        this.creditBureauUrl = creditBureauUrl;
+    }
+
+    // ------------------------------------------------------------------
+    // Called by job workers / execution listeners to keep the DB in sync
+    // ------------------------------------------------------------------
+
+    /** Sets the status; ignores ids unknown to this backend (e.g. instances started from Modeler). */
+    public void updateStatus(String applicationId, ApplicationStatus status) {
+        repository.findById(applicationId).ifPresentOrElse(app -> {
+            if (app.getStatus() != status) {
+                log.info("Application {}: {} -> {}", applicationId, app.getStatus(), status);
+                app.setStatus(status);
+                app.setUpdatedAt(OffsetDateTime.now());
+                repository.save(app);
+            }
+        }, () -> log.debug("Status {} for unknown application {} ignored", status, applicationId));
+    }
+
+    /** Why the application needs correction (shown on the "Correct application" screen). */
+    public void setCorrectionReasons(String applicationId, List<String> reasons) {
+        repository.findById(applicationId).ifPresent(app -> {
+            app.setCorrectionReasons(List.copyOf(reasons));
+            repository.save(app);
+        });
+    }
+
+    public void markIssued(String applicationId, String locNumber) {
+        repository.findById(applicationId).ifPresent(app -> {
+            app.setLocNumber(locNumber);
+            repository.save(app);
+        });
+        updateStatus(applicationId, ApplicationStatus.ISSUED);
+    }
+
+    public void markRejected(String applicationId, String reason) {
+        repository.findById(applicationId).ifPresent(app -> {
+            app.setRejectionReason(reason);
+            repository.save(app);
+        });
+        updateStatus(applicationId, ApplicationStatus.REJECTED);
+    }
+
+    /** Copies corrected fields from the "Correct application" task into the stored application. */
+    public void applyCorrections(Long processInstanceKey, Map<String, Object> corrections) {
+        repository.findByProcessInstanceKey(processInstanceKey).ifPresent(app -> {
+            Map<String, Object> merged = new LinkedHashMap<>(toProcessVariables(app));
+            merged.putAll(corrections);
+            LocApplication corrected = objectMapper.convertValue(merged, LocApplication.class);
+            app.setApplicantName(corrected.getApplicantName());
+            app.setApplicantEmail(corrected.getApplicantEmail());
+            app.setApplicantCountry(corrected.getApplicantCountry());
+            app.setBeneficiaryName(corrected.getBeneficiaryName());
+            app.setBeneficiaryCountry(corrected.getBeneficiaryCountry());
+            app.setBeneficiaryBankName(corrected.getBeneficiaryBankName());
+            app.setAmount(corrected.getAmount());
+            app.setCurrency(corrected.getCurrency());
+            app.setGoodsDescription(corrected.getGoodsDescription());
+            app.setLatestShipmentDate(corrected.getLatestShipmentDate());
+            app.setExpiryDate(corrected.getExpiryDate());
+            app.setTradeDocuments(corrected.getTradeDocuments());
+            app.setUpdatedAt(OffsetDateTime.now());
+            repository.save(app);
+        });
     }
 
     /** 1) store the application, 2) start a process instance with its data as variables. */
@@ -57,6 +124,8 @@ public class ApplicationService {
         if (request.approvalTimeout() != null) {
             variables.put("approvalTimeout", request.approvalTimeout());
         }
+        // where the BPMN REST connector finds the (mock) credit bureau
+        variables.put("creditBureauUrl", creditBureauUrl);
 
         try {
             ProcessInstanceEvent instance = camundaClient.newCreateInstanceCommand()

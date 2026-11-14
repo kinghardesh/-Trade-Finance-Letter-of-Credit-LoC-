@@ -32,6 +32,9 @@
 
     <bpmn:serviceTask id="Task_ValidateApplication" name="Validate application details">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:taskDefinition type="validate-application" retries="3" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToValidate</bpmn:incoming>
@@ -46,6 +49,9 @@
 
     <bpmn:userTask id="Task_CorrectApplication" name="Correct application">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="trade-operations" />
       </bpmn:extensionElements>
@@ -85,6 +91,9 @@
     <!-- ===================== Compliance: CALL ACTIVITY ===================== -->
     <bpmn:callActivity id="CallActivity_ComplianceScreening" name="Perform compliance screening (sanctions + AML)">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:calledElement processId="loc-compliance-screening" propagateAllChildVariables="false" />
         <zeebe:ioMapping>
           <zeebe:input source="=[{name: applicantName, country: applicantCountry, role: &quot;APPLICANT&quot;}, {name: beneficiaryName, country: beneficiaryCountry, role: &quot;BENEFICIARY&quot;}, {name: beneficiaryBankName, country: beneficiaryCountry, role: &quot;ADVISING_BANK&quot;}]" target="parties" />
@@ -118,6 +127,9 @@
     <!-- ===================== Documents: EMBEDDED SUBPROCESS ===================== -->
     <bpmn:subProcess id="SubProcess_VerifyDocuments" name="Verify trade documents">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:ioMapping>
           <zeebe:output source="=documentResults" target="documentResults" />
           <zeebe:output source="=every result in documentResults satisfies result.valid = true" target="documentsVerified" />
@@ -183,11 +195,14 @@
     <!-- ===================== Credit: REST CONNECTOR ===================== -->
     <bpmn:serviceTask id="Task_CreditAssessment" name="Perform credit assessment" zeebe:modelerTemplate="io.camunda.connectors.HttpJson.v2" zeebe:modelerTemplateVersion="12">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:taskDefinition type="io.camunda:http-json:1" retries="3" />
         <zeebe:ioMapping>
           <zeebe:input source="noAuth" target="authentication.type" />
           <zeebe:input source="POST" target="method" />
-          <zeebe:input source="http://localhost:8081/api/mock/credit-bureau/assessments" target="url" />
+          <zeebe:input source="=if creditBureauUrl != null then creditBureauUrl else &quot;http://localhost:8081/api/mock/credit-bureau/assessments&quot;" target="url" />
           <zeebe:input source="={&quot;Content-Type&quot;: &quot;application/json&quot;}" target="headers" />
           <zeebe:input source="false" target="storeResponse" />
           <zeebe:input source="20" target="connectionTimeoutInSeconds" />
@@ -215,6 +230,9 @@
     <!-- ===================== Approval + TIMER escalation ===================== -->
     <bpmn:userTask id="Task_ManagerApproval" name="Obtain manager approval">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="credit-managers" />
       </bpmn:extensionElements>
@@ -236,6 +254,9 @@
 
     <bpmn:userTask id="Task_EscalatedApproval" name="Escalated approval (senior manager)">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:userTask />
         <zeebe:assignmentDefinition candidateGroups="senior-managers" />
       </bpmn:extensionElements>
@@ -264,6 +285,9 @@
 
     <bpmn:serviceTask id="Task_GenerateDraft" name="Generate LoC draft">
       <bpmn:extensionElements>
+        <zeebe:executionListeners>
+          <zeebe:executionListener eventType="start" retries="3" type="update-status" />
+        </zeebe:executionListeners>
         <zeebe:taskDefinition type="generate-loc-draft" retries="3" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToGenerateDraft</bpmn:incoming>

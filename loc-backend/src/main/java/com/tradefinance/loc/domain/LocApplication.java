@@ -30,6 +30,7 @@ public class LocApplication {
     private ApplicationStatus status;
     private Long processInstanceKey;
     private String rejectionReason;
+    private List<String> correctionReasons = new ArrayList<>();
     private String locNumber;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
@@ -84,6 +85,9 @@ public class LocApplication {
 
     public String getRejectionReason() { return rejectionReason; }
     public void setRejectionReason(String rejectionReason) { this.rejectionReason = rejectionReason; }
+
+    public List<String> getCorrectionReasons() { return correctionReasons; }
+    public void setCorrectionReasons(List<String> correctionReasons) { this.correctionReasons = correctionReasons; }
 
     public String getLocNumber() { return locNumber; }
     public void setLocNumber(String locNumber) { this.locNumber = locNumber; }

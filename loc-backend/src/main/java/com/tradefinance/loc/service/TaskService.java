@@ -16,6 +16,7 @@ import com.tradefinance.loc.repository.ApplicationRepository;
 import com.tradefinance.loc.workflow.ProcessConstants;
 
 import io.camunda.client.CamundaClient;
+import io.camunda.client.api.command.ClientHttpException;
 import io.camunda.client.api.search.enums.UserTaskState;
 import io.camunda.client.api.search.response.UserTask;
 
@@ -30,10 +31,13 @@ public class TaskService {
 
     private final CamundaClient camundaClient;
     private final ApplicationRepository repository;
+    private final ApplicationService applicationService;
 
-    public TaskService(CamundaClient camundaClient, ApplicationRepository repository) {
+    public TaskService(CamundaClient camundaClient, ApplicationRepository repository,
+                       ApplicationService applicationService) {
         this.camundaClient = camundaClient;
         this.repository = repository;
+        this.applicationService = applicationService;
     }
 
     /** Open tasks, optionally filtered by candidate group and/or application. */
@@ -81,8 +85,20 @@ public class TaskService {
                     .send()
                     .join();
             log.info("Completed user task {} ({}) with {}", userTaskKey, task.getElementId(), variables);
+        } catch (ClientHttpException e) {
+            // 404/409 from Camunda: the task was completed a moment ago (the search index can still
+            // show it as open for 1-2 seconds) → tell the client "conflict", not "server down"
+            if (e.code() == 404 || e.code() == 409) {
+                throw new IllegalStateException("Task " + userTaskKey + " was already completed");
+            }
+            throw new WorkflowException("Could not complete task " + userTaskKey + ": " + e.getMessage(), e);
         } catch (RuntimeException e) {
             throw new WorkflowException("Could not complete task " + userTaskKey + ": " + e.getMessage(), e);
+        }
+
+        // keep the stored application in line with what the user corrected
+        if (ProcessConstants.TASK_CORRECT_APPLICATION.equals(task.getElementId()) && !variables.isEmpty()) {
+            applicationService.applyCorrections(task.getProcessInstanceKey(), variables);
         }
     }
 

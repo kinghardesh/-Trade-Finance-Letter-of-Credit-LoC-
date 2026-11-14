@@ -18,6 +18,8 @@ import com.tradefinance.loc.api.dto.ErrorResponse;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> validation(MethodArgumentNotValidException e) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();
@@ -50,6 +52,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(WorkflowException.class)
     public ResponseEntity<ErrorResponse> workflow(WorkflowException e) {
+        log.warn("Workflow error: {}", e.getMessage(), e.getCause());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ErrorResponse.of("WORKFLOW_UNAVAILABLE", e.getMessage()));
     }

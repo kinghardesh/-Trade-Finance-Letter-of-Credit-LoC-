@@ -66,7 +66,10 @@ backend starts process `loc-issuance` with these variables.
 | `approvalDecision` | string | `Task_ManagerApproval` / `Task_EscalatedApproval` (user) | `APPROVED`, `REJECTED` |
 | `approverComments` | string | same user tasks | |
 | `approvalEscalated` | boolean | approval timer boundary | `true` when escalated to senior manager |
-| `draftReference` | string | `Task_GenerateDraft` | e.g. `"DRAFT-LOC-APP-2026-0001-1"` |
+| `draftReference` | string | `Task_GenerateDraft` | e.g. `"DRAFT-LOC-APP-2026-0001-v1"` |
+| `draftVersion` | number | `Task_GenerateDraft` | 1, 2, … (increases when terms are rejected) |
+| `draftText` | string | `Task_GenerateDraft` | Draft LoC wording shown on the *Verify LoC terms* screen |
+| `creditBureauUrl` | string | backend, at process start | URL the REST connector calls (follows the backend port) |
 | `termsVerified` | boolean | `Task_VerifyTerms` (user) | `false` → draft is regenerated |
 | `termsComments` | string | `Task_VerifyTerms` (user) | |
 | `locNumber` | string | `Task_IssueLoC` | e.g. `"LC-2026-000123"` |
@@ -95,6 +98,15 @@ The backend updates the status as the workflow moves forward:
 | Generate LoC draft | `Task_GenerateDraft` | `generate-loc-draft` | main |
 | Issue Letter of Credit | `Task_IssueLoC` | `issue-loc` | main |
 | Record rejection | `Task_RecordRejection` | `record-rejection` | main |
+
+### Execution listener (status updates)
+
+A **start execution listener** with job type `update-status` is attached to:
+`Task_ValidateApplication`, `Task_CorrectApplication`, `CallActivity_ComplianceScreening`,
+`SubProcess_VerifyDocuments`, `Task_CreditAssessment`, `Task_ManagerApproval`,
+`Task_EscalatedApproval`, `Task_GenerateDraft`. The backend's `StatusListenerWorker`
+maps the element id to the application status. `ISSUED` / `REJECTED` are set by the
+`issue-loc` / `record-rejection` workers.
 
 ### Service tasks handled by Camunda Connectors (no Java worker)
 

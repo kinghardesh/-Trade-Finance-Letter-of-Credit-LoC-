@@ -79,7 +79,18 @@ Response **201 Created** (`Location: /api/applications/LOC-APP-2026-0001`):
 Response **200**: array of the same object as above (without `processVariables`).
 
 ### `GET /api/applications/{applicationId}` — details
-Response **200**: same object **plus** `processVariables` = the workflow's current variables, e.g.
+Response **200**: same object **plus** `processVariables` = the workflow's current variables.
+
+Fields filled by the workflow (available **immediately**, no index delay):
+
+| Field | When |
+|---|---|
+| `status` | updated each time the workflow enters a new step |
+| `correctionReasons` | list of reasons while status is `CORRECTION_REQUIRED` (validation errors or document discrepancy) — show them on the correction form |
+| `rejectionReason` | set when status is `REJECTED` |
+| `locNumber` | set when status is `ISSUED` (e.g. `LC-2026-000001`) |
+
+Example:
 ```json
 {
   "applicationId": "LOC-APP-2026-0001",
@@ -148,7 +159,8 @@ Request:
 { "variables": { "approvalDecision": "APPROVED", "approverComments": "Within limits" } }
 ```
 Response **204 No Content**.
-Errors: **400** wrong/missing variables, **404** unknown task, **409** task already completed.
+Errors: **400** wrong/missing variables, **404** unknown task, **409** task already completed
+(also happens if the inbox was not refreshed after completing — just reload the list).
 
 ---
 
