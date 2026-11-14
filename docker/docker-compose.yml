@@ -20,4 +20,26 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
 
-  # PostgreSQL will be added here in Step 7.
+  # Business database (applications, documents, status history).
+  # Host port 5440 because 5432-5434 are used by other projects on this PC.
+  # Connect: localhost:5440  db=loc_issuance  user=loc_app  password=loc_app  (local dev only)
+  postgres:
+    image: postgres:16-alpine
+    container_name: loc-postgres
+    restart: unless-stopped
+    ports:
+      - "5440:5432"
+    environment:
+      POSTGRES_DB: loc_issuance
+      POSTGRES_USER: loc_app
+      POSTGRES_PASSWORD: loc_app
+    volumes:
+      - loc-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loc_app -d loc_issuance"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  loc-postgres-data:

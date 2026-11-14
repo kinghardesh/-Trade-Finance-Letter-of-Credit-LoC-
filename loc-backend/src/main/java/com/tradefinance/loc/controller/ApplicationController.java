@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.tradefinance.loc.api.dto.ApplicationResponse;
 import com.tradefinance.loc.api.dto.CreateApplicationRequest;
+import com.tradefinance.loc.api.dto.StatusHistoryResponse;
 import com.tradefinance.loc.domain.LocApplication;
 import com.tradefinance.loc.service.ApplicationService;
 
@@ -23,6 +24,7 @@ import jakarta.validation.Valid;
  *   POST /api/applications          submit a new application (starts the workflow)
  *   GET  /api/applications          list all applications (newest first)
  *   GET  /api/applications/{id}     one application + its current workflow variables
+ *   GET  /api/applications/{id}/history   status timeline
  */
 @RestController
 @RequestMapping("/api/applications")
@@ -51,5 +53,11 @@ public class ApplicationController {
     public ApplicationResponse get(@PathVariable String applicationId) {
         LocApplication app = applicationService.findById(applicationId);
         return ApplicationResponse.from(app, applicationService.findProcessVariables(app));
+    }
+
+    /** Status timeline from table application_status_history, oldest first. */
+    @GetMapping("/{applicationId}/history")
+    public List<StatusHistoryResponse> history(@PathVariable String applicationId) {
+        return applicationService.findHistory(applicationId).stream().map(StatusHistoryResponse::from).toList();
     }
 }

@@ -1,9 +1,7 @@
 package com.tradefinance.loc.worker;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,16 +14,14 @@ import io.camunda.client.annotation.Variable;
 
 /**
  * BPMN: "Issue Letter of Credit" (Task_IssueLoC), job type "issue-loc".
- * Assigns the LoC number, stores status ISSUED. The next task (Email connector)
- * uses locNumber and issueDate in the customer email.
+ * Takes the next LoC number from the PostgreSQL sequence loc_number_seq, stores
+ * status ISSUED. The next task (Email connector) uses locNumber and issueDate.
  */
 @Component
 public class IssueLocWorker {
 
     private static final Logger log = LoggerFactory.getLogger(IssueLocWorker.class);
 
-    // Step 7 replaces this counter with a PostgreSQL sequence
-    private final AtomicInteger sequence = new AtomicInteger();
     private final ApplicationService applicationService;
 
     public IssueLocWorker(ApplicationService applicationService) {
@@ -34,14 +30,14 @@ public class IssueLocWorker {
 
     @JobWorker(type = "issue-loc")
     public Map<String, Object> issue(@Variable String applicationId) {
-        String locNumber = "LC-%d-%06d".formatted(Year.now().getValue(), sequence.incrementAndGet());
+        String number = applicationService.nextLocNumber();
         String issueDate = LocalDate.now().toString();
 
-        applicationService.markIssued(applicationId, locNumber);
-        log.info("[issue-loc] {} -> {} issued on {}", applicationId, locNumber, issueDate);
+        applicationService.markIssued(applicationId, number);
+        log.info("[issue-loc] {} -> {} issued on {}", applicationId, number, issueDate);
 
         return Map.of(
-                "locNumber", locNumber,
+                "locNumber", number,
                 "issueDate", issueDate);
     }
 }

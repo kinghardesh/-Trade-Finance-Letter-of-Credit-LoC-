@@ -64,7 +64,7 @@ an invalid application is accepted (201) and then goes to the *Correct applicati
 Response **201 Created** (`Location: /api/applications/LOC-APP-2026-0001`):
 ```json
 {
-  "applicationId": "LOC-APP-2026-0001",
+  "applicationId": "LOC-APP-2026-1001",
   "status": "SUBMITTED",
   "customerId": "CUST-1001",
   "applicantName": "Rhein Machinery GmbH",
@@ -110,6 +110,16 @@ Example:
 }
 ```
 Values may lag about one second behind the engine. Response **404** if the id is unknown.
+
+### `GET /api/applications/{applicationId}/history` — status timeline
+Response **200** (oldest first; read from PostgreSQL, no delay):
+```json
+[
+  { "status": "SUBMITTED",        "changedAt": "2026-11-14T10:00:00.120+05:30" },
+  { "status": "VALIDATING",       "changedAt": "2026-11-14T10:00:00.310+05:30" },
+  { "status": "COMPLIANCE_CHECK", "changedAt": "2026-11-14T10:00:00.900+05:30" }
+]
+```
 
 Status values: `SUBMITTED`, `VALIDATING`, `CORRECTION_REQUIRED`, `COMPLIANCE_CHECK`,
 `DOCUMENT_VERIFICATION`, `CREDIT_ASSESSMENT`, `PENDING_APPROVAL`, `ESCALATED`,

@@ -1,6 +1,7 @@
 package com.tradefinance.loc.service;
 
 import java.time.OffsetDateTime;
+import java.time.Year;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -9,15 +10,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradefinance.loc.api.dto.CreateApplicationRequest;
 import com.tradefinance.loc.domain.ApplicationStatus;
 import com.tradefinance.loc.domain.LocApplication;
+import com.tradefinance.loc.domain.StatusHistoryEntry;
 import com.tradefinance.loc.domain.TradeDocument;
 import com.tradefinance.loc.exception.NotFoundException;
 import com.tradefinance.loc.exception.WorkflowException;
 import com.tradefinance.loc.repository.ApplicationRepository;
+import com.tradefinance.loc.repository.StatusHistoryRepository;
 import com.tradefinance.loc.workflow.ProcessConstants;
 
 import io.camunda.client.CamundaClient;
@@ -25,7 +29,8 @@ import io.camunda.client.api.response.ProcessInstanceEvent;
 import io.camunda.client.api.search.response.Variable;
 
 /**
- * Saves LoC applications and starts the "loc-issuance" BPMN process for each one.
+ * Saves LoC applications in PostgreSQL and starts the "loc-issuance" BPMN process for each one.
+ * Also offers the small update methods the job workers call to keep the database in sync.
  */
 @Service
 public class ApplicationService {
@@ -33,59 +38,135 @@ public class ApplicationService {
     private static final Logger log = LoggerFactory.getLogger(ApplicationService.class);
 
     private final ApplicationRepository repository;
+    private final StatusHistoryRepository historyRepository;
     private final CamundaClient camundaClient;
     private final ObjectMapper objectMapper;
     private final String creditBureauUrl;
 
-    public ApplicationService(ApplicationRepository repository, CamundaClient camundaClient, ObjectMapper objectMapper,
+    public ApplicationService(ApplicationRepository repository, StatusHistoryRepository historyRepository,
+                              CamundaClient camundaClient, ObjectMapper objectMapper,
                               @Value("${loc.credit-bureau.url}") String creditBureauUrl) {
         this.repository = repository;
+        this.historyRepository = historyRepository;
         this.camundaClient = camundaClient;
         this.objectMapper = objectMapper;
         this.creditBureauUrl = creditBureauUrl;
     }
 
     // ------------------------------------------------------------------
+    // Submit = save in DB, then start the workflow
+    // ------------------------------------------------------------------
+
+    /**
+     * Deliberately NOT one big transaction: the row must be committed BEFORE the process starts,
+     * because the first job workers run within milliseconds and look the application up.
+     */
+    public LocApplication submit(CreateApplicationRequest request) {
+        OffsetDateTime now = OffsetDateTime.now();
+        LocApplication app = toEntity(request);
+        app.setApplicationId("LOC-APP-%d-%04d".formatted(Year.now().getValue(), repository.nextApplicationNumber()));
+        app.setStatus(ApplicationStatus.SUBMITTED);
+        app.setCreatedAt(now);
+        app.setUpdatedAt(now);
+        repository.save(app);
+        historyRepository.save(new StatusHistoryEntry(app.getApplicationId(), ApplicationStatus.SUBMITTED, now));
+
+        Map<String, Object> variables = toProcessVariables(app);
+        if (request.correctionTimeout() != null) {
+            variables.put("correctionTimeout", request.correctionTimeout());
+        }
+        if (request.approvalTimeout() != null) {
+            variables.put("approvalTimeout", request.approvalTimeout());
+        }
+        // where the BPMN REST connector finds the (mock) credit bureau
+        variables.put("creditBureauUrl", creditBureauUrl);
+
+        ProcessInstanceEvent instance;
+        try {
+            instance = camundaClient.newCreateInstanceCommand()
+                    .bpmnProcessId(ProcessConstants.MAIN_PROCESS_ID)
+                    .latestVersion()
+                    .variables(variables)
+                    .send()
+                    .join();
+        } catch (RuntimeException e) {
+            // Do not keep an application whose workflow never started
+            repository.deleteById(app.getApplicationId());
+            throw new WorkflowException("Could not start the LoC workflow in Camunda: " + e.getMessage(), e);
+        }
+
+        setProcessInstanceKey(app.getApplicationId(), instance.getProcessInstanceKey());
+        log.info("Started process {} (instance {}) for application {}",
+                instance.getBpmnProcessId(), instance.getProcessInstanceKey(), app.getApplicationId());
+        return findById(app.getApplicationId());
+    }
+
+    @Transactional
+    public void setProcessInstanceKey(String applicationId, long processInstanceKey) {
+        repository.setProcessInstanceKey(applicationId, processInstanceKey, OffsetDateTime.now());
+    }
+
+    // ------------------------------------------------------------------
+    // Read
+    // ------------------------------------------------------------------
+
+    @Transactional(readOnly = true)
+    public List<LocApplication> findAll() {
+        return repository.findAllByOrderByCreatedAtDesc();
+    }
+
+    @Transactional(readOnly = true)
+    public LocApplication findById(String applicationId) {
+        return repository.findById(applicationId)
+                .orElseThrow(() -> new NotFoundException("Application " + applicationId + " not found"));
+    }
+
+    @Transactional(readOnly = true)
+    public List<StatusHistoryEntry> findHistory(String applicationId) {
+        findById(applicationId); // 404 if unknown
+        return historyRepository.findByApplicationIdOrderByChangedAtAscIdAsc(applicationId);
+    }
+
+    // ------------------------------------------------------------------
     // Called by job workers / execution listeners to keep the DB in sync
     // ------------------------------------------------------------------
 
-    /** Sets the status; ignores ids unknown to this backend (e.g. instances started from Modeler). */
+    /** Sets the status and writes a history row; ignores ids unknown to this backend. */
+    @Transactional
     public void updateStatus(String applicationId, ApplicationStatus status) {
-        repository.findById(applicationId).ifPresentOrElse(app -> {
-            if (app.getStatus() != status) {
-                log.info("Application {}: {} -> {}", applicationId, app.getStatus(), status);
-                app.setStatus(status);
-                app.setUpdatedAt(OffsetDateTime.now());
-                repository.save(app);
-            }
-        }, () -> log.debug("Status {} for unknown application {} ignored", status, applicationId));
+        OffsetDateTime now = OffsetDateTime.now();
+        if (repository.updateStatus(applicationId, status, now) == 1) {
+            historyRepository.save(new StatusHistoryEntry(applicationId, status, now));
+            log.info("Application {} -> {}", applicationId, status);
+        }
     }
 
     /** Why the application needs correction (shown on the "Correct application" screen). */
+    @Transactional
     public void setCorrectionReasons(String applicationId, List<String> reasons) {
-        repository.findById(applicationId).ifPresent(app -> {
-            app.setCorrectionReasons(List.copyOf(reasons));
-            repository.save(app);
-        });
+        repository.findById(applicationId).ifPresent(app -> app.setCorrectionReasons(reasons));
     }
 
+    @Transactional
     public void markIssued(String applicationId, String locNumber) {
-        repository.findById(applicationId).ifPresent(app -> {
-            app.setLocNumber(locNumber);
-            repository.save(app);
-        });
+        repository.setLocNumber(applicationId, locNumber, OffsetDateTime.now());
         updateStatus(applicationId, ApplicationStatus.ISSUED);
     }
 
+    @Transactional
     public void markRejected(String applicationId, String reason) {
-        repository.findById(applicationId).ifPresent(app -> {
-            app.setRejectionReason(reason);
-            repository.save(app);
-        });
+        repository.setRejectionReason(applicationId, reason, OffsetDateTime.now());
         updateStatus(applicationId, ApplicationStatus.REJECTED);
     }
 
+    /** Next LoC number from the database sequence, e.g. LC-2026-000001. */
+    @Transactional
+    public String nextLocNumber() {
+        return "LC-%d-%06d".formatted(Year.now().getValue(), repository.nextLocNumber());
+    }
+
     /** Copies corrected fields from the "Correct application" task into the stored application. */
+    @Transactional
     public void applyCorrections(Long processInstanceKey, Map<String, Object> corrections) {
         repository.findByProcessInstanceKey(processInstanceKey).ifPresent(app -> {
             Map<String, Object> merged = new LinkedHashMap<>(toProcessVariables(app));
@@ -104,57 +185,8 @@ public class ApplicationService {
             app.setExpiryDate(corrected.getExpiryDate());
             app.setTradeDocuments(corrected.getTradeDocuments());
             app.setUpdatedAt(OffsetDateTime.now());
-            repository.save(app);
+            // no save() needed: changes to a loaded entity are written when the transaction commits
         });
-    }
-
-    /** 1) store the application, 2) start a process instance with its data as variables. */
-    public LocApplication submit(CreateApplicationRequest request) {
-        LocApplication app = toEntity(request);
-        app.setApplicationId(repository.nextApplicationId());
-        app.setStatus(ApplicationStatus.SUBMITTED);
-        app.setCreatedAt(OffsetDateTime.now());
-        app.setUpdatedAt(app.getCreatedAt());
-        repository.save(app);
-
-        Map<String, Object> variables = toProcessVariables(app);
-        if (request.correctionTimeout() != null) {
-            variables.put("correctionTimeout", request.correctionTimeout());
-        }
-        if (request.approvalTimeout() != null) {
-            variables.put("approvalTimeout", request.approvalTimeout());
-        }
-        // where the BPMN REST connector finds the (mock) credit bureau
-        variables.put("creditBureauUrl", creditBureauUrl);
-
-        try {
-            ProcessInstanceEvent instance = camundaClient.newCreateInstanceCommand()
-                    .bpmnProcessId(ProcessConstants.MAIN_PROCESS_ID)
-                    .latestVersion()
-                    .variables(variables)
-                    .send()
-                    .join();
-
-            app.setProcessInstanceKey(instance.getProcessInstanceKey());
-            app.setUpdatedAt(OffsetDateTime.now());
-            repository.save(app);
-            log.info("Started process {} (instance {}) for application {}",
-                    instance.getBpmnProcessId(), instance.getProcessInstanceKey(), app.getApplicationId());
-            return app;
-        } catch (RuntimeException e) {
-            // Do not keep an application whose workflow never started
-            repository.deleteById(app.getApplicationId());
-            throw new WorkflowException("Could not start the LoC workflow in Camunda: " + e.getMessage(), e);
-        }
-    }
-
-    public List<LocApplication> findAll() {
-        return repository.findAllNewestFirst();
-    }
-
-    public LocApplication findById(String applicationId) {
-        return repository.findById(applicationId)
-                .orElseThrow(() -> new NotFoundException("Application " + applicationId + " not found"));
     }
 
     /**

@@ -79,6 +79,11 @@ public class TaskService {
         UserTask task = getOpenTask(userTaskKey);
         validateVariables(task.getElementId(), variables);
 
+        // save corrected fields in the database FIRST, so the workflow continues with stored data
+        if (ProcessConstants.TASK_CORRECT_APPLICATION.equals(task.getElementId()) && !variables.isEmpty()) {
+            applicationService.applyCorrections(task.getProcessInstanceKey(), variables);
+        }
+
         try {
             camundaClient.newCompleteUserTaskCommand(userTaskKey)
                     .variables(variables)
@@ -94,11 +99,6 @@ public class TaskService {
             throw new WorkflowException("Could not complete task " + userTaskKey + ": " + e.getMessage(), e);
         } catch (RuntimeException e) {
             throw new WorkflowException("Could not complete task " + userTaskKey + ": " + e.getMessage(), e);
-        }
-
-        // keep the stored application in line with what the user corrected
-        if (ProcessConstants.TASK_CORRECT_APPLICATION.equals(task.getElementId()) && !variables.isEmpty()) {
-            applicationService.applyCorrections(task.getProcessInstanceKey(), variables);
         }
     }
 
