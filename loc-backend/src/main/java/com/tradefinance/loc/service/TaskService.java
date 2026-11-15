@@ -103,8 +103,14 @@ public class TaskService {
         UserTask task;
         try {
             task = camundaClient.newUserTaskGetRequest(userTaskKey).send().join();
+        } catch (ClientHttpException e) {
+            if (e.code() == 404) {
+                throw new NotFoundException("Task " + userTaskKey + " not found");
+            }
+            throw new WorkflowException("Could not load task " + userTaskKey + ": " + e.getMessage(), e);
         } catch (RuntimeException e) {
-            throw new NotFoundException("Task " + userTaskKey + " not found");
+            // Camunda not reachable etc. → 503, not 404
+            throw new WorkflowException("Could not load task " + userTaskKey + ": " + e.getMessage(), e);
         }
         if (task.getState() != UserTaskState.CREATED) {
             throw new IllegalStateException("Task " + userTaskKey + " is not open (state " + task.getState() + ")");

@@ -90,7 +90,8 @@ public class ApplicationService {
                     .send()
                     .join();
         } catch (RuntimeException e) {
-            // Do not keep an application whose workflow never started
+            // Do not keep an application (or its history) whose workflow never started
+            historyRepository.deleteByApplicationId(app.getApplicationId());
             repository.deleteById(app.getApplicationId());
             throw new WorkflowException("Could not start the LoC workflow in Camunda: " + e.getMessage(), e);
         }
