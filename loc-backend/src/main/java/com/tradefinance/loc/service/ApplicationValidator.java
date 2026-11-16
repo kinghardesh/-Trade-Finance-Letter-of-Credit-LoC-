@@ -3,6 +3,7 @@ package com.tradefinance.loc.service;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -38,17 +39,23 @@ public class ApplicationValidator {
         LocalDate expiry = parse(expiryDate, "expiryDate", errors);
 
         if (shipment != null && shipment.isBefore(today)) {
-            errors.add("latestShipmentDate must not be in the past");
+            errors.add("Latest shipment date %s is in the past (today is %s) - choose %s or later"
+                    .formatted(shipment, today, today));
         }
         if (shipment != null && expiry != null && expiry.isBefore(shipment.plusDays(PRESENTATION_PERIOD_DAYS))) {
-            errors.add("expiryDate must be at least " + PRESENTATION_PERIOD_DAYS
-                    + " days after latestShipmentDate (presentation period)");
+            long days = ChronoUnit.DAYS.between(shipment, expiry);
+            errors.add(("Expiry date %s is only %d days after latest shipment date %s - it must be at least %d days "
+                    + "(presentation period), so the earliest allowed expiry date is %s")
+                    .formatted(expiry, days, shipment, PRESENTATION_PERIOD_DAYS,
+                            shipment.plusDays(PRESENTATION_PERIOD_DAYS)));
         }
         if (applicantCountry != null && applicantCountry.equals(beneficiaryCountry)) {
-            errors.add("applicant and beneficiary must be in different countries");
+            errors.add("Applicant and beneficiary are both in %s - a Letter of Credit is for international trade, "
+                    .formatted(applicantCountry) + "so they must be in different countries");
         }
         if (amount != null && amount.compareTo(MAX_AMOUNT) > 0) {
-            errors.add("amount exceeds the maximum of 50,000,000 for this product");
+            errors.add("Amount %s exceeds the maximum of 50,000,000 for this product"
+                    .formatted(amount.toPlainString()));
         }
 
         Set<String> types = tradeDocuments == null ? Set.of()
@@ -58,7 +65,7 @@ public class ApplicationValidator {
         REQUIRED_DOCUMENTS.stream()
                 .filter(t -> !types.contains(t))
                 .sorted()
-                .forEach(t -> errors.add("required document missing: " + t));
+                .forEach(t -> errors.add("Required document missing: " + t + " - add it to the trade documents"));
 
         return errors;
     }

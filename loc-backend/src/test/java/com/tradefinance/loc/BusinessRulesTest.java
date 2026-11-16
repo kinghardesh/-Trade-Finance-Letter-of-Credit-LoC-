@@ -43,6 +43,23 @@ class BusinessRulesTest {
     }
 
     @Test
+    void dateErrorsShowTheActualDatesAndTheEarliestAllowedExpiry() {
+        // 1 Nov -> 21 Nov is only 20 days; the shipment date is also before "today"
+        List<String> errors = validator.validate("2026-11-01", "2026-11-21", "IN", "US",
+                new BigDecimal("1000"), DOCS, TODAY);
+        assertThat(errors).containsExactly(
+                "Latest shipment date 2026-11-01 is in the past (today is 2026-11-14) - choose 2026-11-14 or later",
+                "Expiry date 2026-11-21 is only 20 days after latest shipment date 2026-11-01 - it must be at least "
+                        + "21 days (presentation period), so the earliest allowed expiry date is 2026-11-22");
+    }
+
+    @Test
+    void exactly21DaysIsAccepted() {
+        assertThat(validator.validate("2026-11-20", "2026-12-11", "IN", "US",
+                new BigDecimal("1000"), DOCS, TODAY)).isEmpty();
+    }
+
+    @Test
     void customerRegistryRules() {
         var registry = new MockCustomerRegistry();
         assertThat(registry.check("CUST-1001", new BigDecimal("250000")).riskRating()).isEqualTo("LOW");
