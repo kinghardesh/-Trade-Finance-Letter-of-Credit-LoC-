@@ -1,6 +1,7 @@
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import NewApplication from "./NewApplication";
+import ApplicationDetails from "./ApplicationDetails";
 import {
   Activity,
   ArrowDownRight,
@@ -759,9 +760,6 @@ function TaskInbox({ tasks, onRefresh, loading }) {
 function ApplicationsPage({ applications, loading, error, onRefresh }) {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [details, setDetails] = useState(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
-  const [detailsError, setDetailsError] = useState("");
   const [deletingId, setDeletingId] = useState("");
   const [deleteError, setDeleteError] = useState("");
 
@@ -775,7 +773,7 @@ function ApplicationsPage({ applications, loading, error, onRefresh }) {
     setDeleteError("");
     try {
       await deleteApplication(item.applicationId);
-      if (selectedId === item.applicationId) { setSelectedId(""); setDetails(null); }
+      if (selectedId === item.applicationId) setSelectedId("");
       await onRefresh();
     } catch (err) {
       setDeleteError(err.response?.data?.message || `Could not delete ${item.applicationId}.`);
@@ -793,20 +791,12 @@ function ApplicationsPage({ applications, loading, error, onRefresh }) {
     ].some((value) => String(value || "").toLowerCase().includes(query));
   });
 
-  async function viewDetails(applicationId) {
+  function viewDetails(applicationId) {
     setSelectedId(applicationId);
-    setDetails(null);
-    setDetailsError("");
-    setDetailsLoading(true);
-    try {
-      const response = await getApplication(applicationId);
-      setDetails(response.data);
-    } catch (err) {
-      setDetailsError(err.response?.data?.message || "Could not load application details.");
-    } finally {
-      setDetailsLoading(false);
-    }
   }
+
+  // stable function so the pop-up's Escape-key listener is not re-added on every render
+  const closeDetails = useCallback(() => setSelectedId(""), []);
 
   return (
     <>
@@ -850,27 +840,9 @@ function ApplicationsPage({ applications, loading, error, onRefresh }) {
         )}
       </article>
 
-      {selectedId && <article className="panel" style={{ marginTop: 20 }}>
-        <div className="panel-heading"><div><h2>Application details</h2><p>{selectedId}</p></div><button className="icon-button" aria-label="Close details" onClick={() => { setSelectedId(""); setDetails(null); }}><X size={18} /></button></div>
-        <div style={{ padding: 20 }}>
-          {detailsLoading ? <p>Loading application details...</p> : detailsError ? <p style={{ color: "#c0392b" }}>{detailsError}</p> : details ? (
-            <>
-              <div className="stats-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-                <StatCard title="Applicant" value={details.applicantName || "—"} note={details.applicantEmail || "Applicant"} icon={BriefcaseBusiness} tone="blue" />
-                <StatCard title="Beneficiary" value={details.beneficiaryName || "—"} note={details.beneficiaryCountry || "Country unavailable"} icon={FileCheck2} tone="green" />
-                <StatCard title="Amount" value={formatAmount(details.amount, details.currency)} note={details.currency || "Currency unavailable"} icon={Activity} tone="orange" />
-                <StatCard title="Current status" value={<StatusBadge status={details.status} />} note={details.locNumber ? `LoC ${details.locNumber}` : "Workflow in progress"} icon={Clock3} tone="blue" />
-              </div>
-              <div className="overview-grid" style={{ marginTop: 20 }}>
-                <div><h3>Trade information</h3><p><strong>Customer ID:</strong> {details.customerId || "—"}</p><p><strong>Beneficiary bank:</strong> {details.beneficiaryBankName || "—"}</p><p><strong>Goods:</strong> {details.goodsDescription || "—"}</p><p><strong>Applicant country:</strong> {details.applicantCountry || "—"}</p><p><strong>Latest shipment:</strong> {details.latestShipmentDate || "—"}</p><p><strong>Expiry date:</strong> {details.expiryDate || "—"}</p></div>
-                <div><h3>Trade documents</h3>{Array.isArray(details.tradeDocuments) && details.tradeDocuments.length ? <ul>{details.tradeDocuments.map((doc, index) => <li key={`${doc.documentType}-${index}`}><strong>{doc.documentType}</strong> — {doc.documentReference || "No reference"}{doc.fileName ? ` (${doc.fileName})` : ""}</li>)}</ul> : <p>No trade documents returned.</p>}</div>
-              </div>
-              {details.correctionReasons?.length > 0 && <><h3>Correction reasons</h3><ul>{details.correctionReasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul></>}
-              {details.rejectionReason && <p><strong>Rejection reason:</strong> {details.rejectionReason}</p>}
-            </>
-          ) : null}
-        </div>
-      </article>}
+      {selectedId && (
+        <ApplicationDetails applicationId={selectedId} onClose={closeDetails} />
+      )}
     </>
   );
 }

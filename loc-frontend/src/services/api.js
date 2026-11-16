@@ -15,6 +15,10 @@ export const getApplications = () =>
 export const getApplication = (applicationId) =>
   api.get(`/api/applications/${applicationId}`);
 
+// Status timeline, oldest first: [{ status, changedAt }]
+export const getApplicationHistory = (applicationId) =>
+  api.get(`/api/applications/${applicationId}/history`);
+
 export const submitApplication = (applicationData) =>
   api.post("/api/applications", applicationData);
 
