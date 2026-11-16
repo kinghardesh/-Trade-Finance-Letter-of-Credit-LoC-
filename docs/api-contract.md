@@ -125,6 +125,20 @@ Status values: `SUBMITTED`, `VALIDATING`, `CORRECTION_REQUIRED`, `COMPLIANCE_CHE
 `DOCUMENT_VERIFICATION`, `CREDIT_ASSESSMENT`, `PENDING_APPROVAL`, `ESCALATED`,
 `DRAFT_GENERATED`, `ISSUED`, `REJECTED` (updated by the job workers from Step 6 on).
 
+### `DELETE /api/applications/{applicationId}` — delete an application
+
+- Workflow still running (e.g. `CORRECTION_REQUIRED`, `PENDING_APPROVAL`) → the Camunda process
+  instance is **canceled** first (Operate shows it as canceled), then the application is deleted.
+- Workflow already finished (`ISSUED`, `REJECTED`) → only the application is deleted; the finished
+  instance stays in Operate as history.
+- Deletes the application, its trade documents, correction reasons and status history.
+
+| Response | When |
+|---|---|
+| `204 No Content` | deleted |
+| `404 NOT_FOUND` | unknown application id |
+| `503 WORKFLOW_UNAVAILABLE` | Camunda could not cancel the workflow — nothing was deleted |
+
 ---
 
 ## User tasks (task inbox)

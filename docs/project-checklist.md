@@ -13,9 +13,10 @@ Legend: ✅ done and tested · ⚠️ done with a limitation · ⏳ open
 | 5 | Embedded Subprocess | `SubProcess_VerifyDocuments` | Expanded box in the diagram | ✅ |
 | 6 | Error Boundary Events | `Boundary_SanctionsHit` (SANCTIONS_HIT), `Boundary_DocumentDiscrepancy` (DOCUMENT_DISCREPANCY) | Demo scenarios 4 and 8 | ✅ |
 | 7 | Timer Boundary Events | `Boundary_ApprovalTimeout` (escalation), `Boundary_CorrectionTimeout` (rejection) | Demo scenarios 7 and 8b (`approvalTimeout` / `correctionTimeout` = `PT30S`) | ✅ |
-| 8 | Exclusive Gateways | 8 decision gateways + 4 merge gateways | Every scenario takes a different branch | ✅ |
+| 8 | Exclusive Gateways | 8 decision gateways + 3 merge gateways (the "regenerate draft" loop goes straight back into *Generate LoC draft*) | Every scenario takes a different branch | ✅ |
+| + | Parallel Gateway (extra) | `Gateway_NotifySplit` / `Gateway_NotifyJoin`: customer and advising bank are emailed at the same time after issuing | Operate: both branches completed; Mailpit: 2 emails per issued LoC | ✅ |
 | 9 | REST Connector | `Task_CreditAssessment` → `POST /api/mock/credit-bureau/assessments` | Scenario 6 (amount 6,000,000) → declined | ✅ |
-| 10 | Email Connectors | `Task_NotifyCustomer`, `Task_NotifyRejection` → Mailpit | http://localhost:8025 | ✅ |
+| 10 | Email Connectors | `Task_NotifyCustomer`, `Task_NotifyAdvisingBank`, `Task_NotifyRejection` → Mailpit | http://localhost:8025 | ✅ |
 | 11 | FEEL expressions & variable mappings | Gateway conditions, `parties` input mapping, AML output mapping (`complianceStatus`), REST result expression, timer durations, email subject/body | Properties panel → *Inputs / Outputs / Condition* | ✅ |
 | + | Execution listeners (extra) | `update-status` on 8 elements | Status changes in `GET /api/applications/{id}/history` | ✅ |
 

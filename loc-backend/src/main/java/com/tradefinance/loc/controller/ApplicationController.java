@@ -4,6 +4,7 @@ import java.net.URI;
 import java.util.List;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,6 +26,7 @@ import jakarta.validation.Valid;
  *   GET  /api/applications          list all applications (newest first)
  *   GET  /api/applications/{id}     one application + its current workflow variables
  *   GET  /api/applications/{id}/history   status timeline
+ *   DELETE /api/applications/{id}  delete (cancels a running workflow first)
  */
 @RestController
 @RequestMapping("/api/applications")
@@ -53,6 +55,13 @@ public class ApplicationController {
     public ApplicationResponse get(@PathVariable String applicationId) {
         LocApplication app = applicationService.findById(applicationId);
         return ApplicationResponse.from(app, applicationService.findProcessVariables(app));
+    }
+
+    /** Deletes the application; a still-running workflow is canceled in Camunda first. */
+    @DeleteMapping("/{applicationId}")
+    public ResponseEntity<Void> delete(@PathVariable String applicationId) {
+        applicationService.delete(applicationId);
+        return ResponseEntity.noContent().build();
     }
 
     /** Status timeline from table application_status_history, oldest first. */

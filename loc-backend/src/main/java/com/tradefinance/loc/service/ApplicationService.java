@@ -25,6 +25,7 @@ import com.tradefinance.loc.repository.StatusHistoryRepository;
 import com.tradefinance.loc.workflow.ProcessConstants;
 
 import io.camunda.client.CamundaClient;
+import io.camunda.client.api.command.ClientHttpException;
 import io.camunda.client.api.response.ProcessInstanceEvent;
 import io.camunda.client.api.search.response.Variable;
 
@@ -158,6 +159,38 @@ public class ApplicationService {
     public void markRejected(String applicationId, String reason) {
         repository.setRejectionReason(applicationId, reason, OffsetDateTime.now());
         updateStatus(applicationId, ApplicationStatus.REJECTED);
+    }
+
+    /**
+     * Deletes an application. If its workflow is still running it is CANCELED in Camunda first
+     * (it then shows as "canceled" in Operate); finished workflows stay in Operate as history.
+     * The database rows are only removed after Camunda confirmed, so we never leave a running
+     * workflow without its application.
+     */
+    public void delete(String applicationId) {
+        LocApplication app = findById(applicationId); // 404 if unknown
+        Long processInstanceKey = app.getProcessInstanceKey();
+        if (processInstanceKey != null) {
+            try {
+                camundaClient.newCancelInstanceCommand(processInstanceKey).send().join();
+                log.info("Canceled process instance {} of application {}", processInstanceKey, applicationId);
+            } catch (ClientHttpException e) {
+                // 404 = the workflow already ended (ISSUED / REJECTED) → nothing to cancel
+                if (e.code() != 404) {
+                    throw new WorkflowException("Could not cancel the workflow of " + applicationId + ": " + e.getMessage(), e);
+                }
+            } catch (RuntimeException e) {
+                throw new WorkflowException("Could not cancel the workflow of " + applicationId + ": " + e.getMessage(), e);
+            }
+        }
+        deleteRows(applicationId);
+        log.info("Deleted application {}", applicationId);
+    }
+
+    // each repository call runs in its own transaction (self-invocation would ignore @Transactional here)
+    private void deleteRows(String applicationId) {
+        historyRepository.deleteByApplicationId(applicationId);
+        repository.deleteById(applicationId); // trade documents + correction reasons go with it
     }
 
     /** Next LoC number from the database sequence, e.g. LC-2026-000001. */

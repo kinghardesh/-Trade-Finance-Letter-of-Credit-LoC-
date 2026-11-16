@@ -281,11 +281,6 @@
     </bpmn:exclusiveGateway>
 
     <!-- ===================== Draft, terms, issuance ===================== -->
-    <bpmn:exclusiveGateway id="Gateway_MergeDraft">
-      <bpmn:incoming>Flow_Approved</bpmn:incoming>
-      <bpmn:incoming>Flow_TermsNo</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToGenerateDraft</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
 
     <bpmn:serviceTask id="Task_GenerateDraft" name="Generate LoC draft">
       <bpmn:extensionElements>
@@ -294,7 +289,8 @@
         </zeebe:executionListeners>
         <zeebe:taskDefinition type="generate-loc-draft" retries="3" />
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_ToGenerateDraft</bpmn:incoming>
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
+      <bpmn:incoming>Flow_TermsNo</bpmn:incoming>
       <bpmn:outgoing>Flow_ToVerifyTerms</bpmn:outgoing>
     </bpmn:serviceTask>
 
@@ -319,8 +315,15 @@
         <zeebe:taskDefinition type="issue-loc" retries="3" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_TermsYes</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToNotifyCustomer</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToNotifySplit</bpmn:outgoing>
     </bpmn:serviceTask>
+
+    <!-- PARALLEL GATEWAY: customer and advising bank are notified at the same time -->
+    <bpmn:parallelGateway id="Gateway_NotifySplit" name="Notify all parties">
+      <bpmn:incoming>Flow_ToNotifySplit</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToNotifyCustomer</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToNotifyBank</bpmn:outgoing>
+    </bpmn:parallelGateway>
 
     <!-- EMAIL CONNECTOR: success notification -->
     <bpmn:serviceTask id="Task_NotifyCustomer" name="Notify customer" zeebe:modelerTemplate="io.camunda.connectors.email.v1" zeebe:modelerTemplateVersion="3">
@@ -348,8 +351,52 @@
         </zeebe:taskHeaders>
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ToNotifyCustomer</bpmn:incoming>
-      <bpmn:outgoing>Flow_ToEndIssued</bpmn:outgoing>
+      <bpmn:outgoing>Flow_CustomerNotified</bpmn:outgoing>
     </bpmn:serviceTask>
+
+    <!-- EMAIL CONNECTOR: the advising bank is informed at the same time as the customer (mock address) -->
+    <bpmn:serviceTask id="Task_NotifyAdvisingBank" name="Notify advising bank" zeebe:modelerTemplate="io.camunda.connectors.email.v1" zeebe:modelerTemplateVersion="3">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="io.camunda:email:1" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="simple" target="authentication.type" />
+          <zeebe:input source="loc-workflow" target="authentication.username" />
+          <zeebe:input source="mailpit" target="authentication.password" />
+          <zeebe:input source="smtp" target="protocol" />
+          <zeebe:input source="localhost" target="data.smtpConfig.smtpHost" />
+          <zeebe:input source="1025" target="data.smtpConfig.smtpPort" />
+          <zeebe:input source="NONE" target="data.smtpConfig.smtpCryptographicProtocol" />
+          <zeebe:input source="sendEmailSmtp" target="data.smtpActionDiscriminator" />
+          <zeebe:input source="trade-finance@loc-demo.local" target="data.smtpAction.from" />
+          <zeebe:input source="advising-bank@loc-demo.local" target="data.smtpAction.to" />
+          <zeebe:input source="=&quot;New Letter of Credit &quot; + locNumber + &quot; - please advise the beneficiary&quot;" target="data.smtpAction.subject" />
+          <zeebe:input source="PLAIN" target="data.smtpAction.contentType" />
+          <zeebe:input source="=&quot;To: &quot; + beneficiaryBankName + &quot;
+
+We have issued Letter of Credit &quot; + locNumber + &quot; on &quot; + issueDate + &quot; for &quot; + string(amount) + &quot; &quot; + currency + &quot;.
+Applicant: &quot; + applicantName + &quot;
+Beneficiary: &quot; + beneficiaryName + &quot;
+Expiry date: &quot; + expiryDate + &quot;
+
+Please advise the beneficiary.
+
+Trade Finance Operations (demo system)&quot;" target="data.smtpAction.body" />
+        </zeebe:ioMapping>
+        <zeebe:taskHeaders>
+          <zeebe:header key="elementTemplateVersion" value="3" />
+          <zeebe:header key="elementTemplateId" value="io.camunda.connectors.email.v1" />
+          <zeebe:header key="retryBackoff" value="PT10S" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToNotifyBank</bpmn:incoming>
+      <bpmn:outgoing>Flow_BankNotified</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:parallelGateway id="Gateway_NotifyJoin">
+      <bpmn:incoming>Flow_CustomerNotified</bpmn:incoming>
+      <bpmn:incoming>Flow_BankNotified</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToEndIssued</bpmn:outgoing>
+    </bpmn:parallelGateway>
 
     <bpmn:endEvent id="End_LoCIssued" name="LoC issued">
       <bpmn:incoming>Flow_ToEndIssued</bpmn:incoming>
@@ -451,25 +498,28 @@
     <bpmn:sequenceFlow id="Flow_ToEscalatedApproval" sourceRef="Boundary_ApprovalTimeout" targetRef="Task_EscalatedApproval" />
     <bpmn:sequenceFlow id="Flow_EscalatedToMerge" sourceRef="Task_EscalatedApproval" targetRef="Gateway_MergeApproval" />
     <bpmn:sequenceFlow id="Flow_ToGatewayApproval" sourceRef="Gateway_MergeApproval" targetRef="Gateway_ApprovalDecision" />
-    <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_ApprovalDecision" targetRef="Gateway_MergeDraft">
+    <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_ApprovalDecision" targetRef="Task_GenerateDraft">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approvalDecision = "APPROVED"</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_ApprovalRejected" name="Rejected" sourceRef="Gateway_ApprovalDecision" targetRef="Gateway_MergeRejection">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=approvalDecision = "REJECTED"</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
 
-    <bpmn:sequenceFlow id="Flow_ToGenerateDraft" sourceRef="Gateway_MergeDraft" targetRef="Task_GenerateDraft" />
     <bpmn:sequenceFlow id="Flow_ToVerifyTerms" sourceRef="Task_GenerateDraft" targetRef="Task_VerifyTerms" />
     <bpmn:sequenceFlow id="Flow_ToGatewayTerms" sourceRef="Task_VerifyTerms" targetRef="Gateway_TermsVerified" />
     <bpmn:sequenceFlow id="Flow_TermsYes" name="Yes" sourceRef="Gateway_TermsVerified" targetRef="Task_IssueLoC">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=termsVerified = true</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="Flow_TermsNo" name="No – regenerate draft" sourceRef="Gateway_TermsVerified" targetRef="Gateway_MergeDraft">
+    <bpmn:sequenceFlow id="Flow_TermsNo" name="No – regenerate draft" sourceRef="Gateway_TermsVerified" targetRef="Task_GenerateDraft">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=termsVerified = false</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
 
-    <bpmn:sequenceFlow id="Flow_ToNotifyCustomer" sourceRef="Task_IssueLoC" targetRef="Task_NotifyCustomer" />
-    <bpmn:sequenceFlow id="Flow_ToEndIssued" sourceRef="Task_NotifyCustomer" targetRef="End_LoCIssued" />
+    <bpmn:sequenceFlow id="Flow_ToNotifySplit" sourceRef="Task_IssueLoC" targetRef="Gateway_NotifySplit" />
+    <bpmn:sequenceFlow id="Flow_ToNotifyCustomer" sourceRef="Gateway_NotifySplit" targetRef="Task_NotifyCustomer" />
+    <bpmn:sequenceFlow id="Flow_ToNotifyBank" sourceRef="Gateway_NotifySplit" targetRef="Task_NotifyAdvisingBank" />
+    <bpmn:sequenceFlow id="Flow_CustomerNotified" sourceRef="Task_NotifyCustomer" targetRef="Gateway_NotifyJoin" />
+    <bpmn:sequenceFlow id="Flow_BankNotified" sourceRef="Task_NotifyAdvisingBank" targetRef="Gateway_NotifyJoin" />
+    <bpmn:sequenceFlow id="Flow_ToEndIssued" sourceRef="Gateway_NotifyJoin" targetRef="End_LoCIssued" />
 
     <bpmn:sequenceFlow id="Flow_ToRecordRejection" sourceRef="Gateway_MergeRejection" targetRef="Task_RecordRejection" />
     <bpmn:sequenceFlow id="Flow_ToNotifyRejection" sourceRef="Task_RecordRejection" targetRef="Task_NotifyRejection" />
@@ -557,9 +607,6 @@
       <bpmndi:BPMNShape id="Gateway_ApprovalDecision_di" bpmnElement="Gateway_ApprovalDecision" isMarkerVisible="true">
         <dc:Bounds x="2105" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_MergeDraft_di" bpmnElement="Gateway_MergeDraft" isMarkerVisible="true">
-        <dc:Bounds x="2205" y="175" width="50" height="50" />
-      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_GenerateDraft_di" bpmnElement="Task_GenerateDraft">
         <dc:Bounds x="2290" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
@@ -572,11 +619,22 @@
       <bpmndi:BPMNShape id="Task_IssueLoC_di" bpmnElement="Task_IssueLoC">
         <dc:Bounds x="2710" y="160" width="100" height="80" />
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_NotifySplit_di" bpmnElement="Gateway_NotifySplit">
+        <dc:Bounds x="2855" y="175" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="2800" y="232" width="60" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Task_NotifyCustomer_di" bpmnElement="Task_NotifyCustomer">
-        <dc:Bounds x="2870" y="160" width="100" height="80" />
+        <dc:Bounds x="2950" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyAdvisingBank_di" bpmnElement="Task_NotifyAdvisingBank">
+        <dc:Bounds x="2950" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_NotifyJoin_di" bpmnElement="Gateway_NotifyJoin">
+        <dc:Bounds x="3105" y="175" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_LoCIssued_di" bpmnElement="End_LoCIssued">
-        <dc:Bounds x="3032" y="182" width="36" height="36" />
+        <dc:Bounds x="3212" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="3203" y="225" width="54" height="14" /></bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
 
       <bpmndi:BPMNShape id="Gateway_MergeRejection_di" bpmnElement="Gateway_MergeRejection" isMarkerVisible="true">
@@ -675,13 +733,10 @@
         <di:waypoint x="2055" y="200" /><di:waypoint x="2105" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
-        <di:waypoint x="2155" y="200" /><di:waypoint x="2205" y="200" />
+        <di:waypoint x="2155" y="200" /><di:waypoint x="2290" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ApprovalRejected_di" bpmnElement="Flow_ApprovalRejected">
         <di:waypoint x="2130" y="225" /><di:waypoint x="2130" y="420" /><di:waypoint x="2205" y="420" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ToGenerateDraft_di" bpmnElement="Flow_ToGenerateDraft">
-        <di:waypoint x="2255" y="200" /><di:waypoint x="2290" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToVerifyTerms_di" bpmnElement="Flow_ToVerifyTerms">
         <di:waypoint x="2390" y="200" /><di:waypoint x="2450" y="200" />
@@ -693,13 +748,25 @@
         <di:waypoint x="2655" y="200" /><di:waypoint x="2710" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_TermsNo_di" bpmnElement="Flow_TermsNo">
-        <di:waypoint x="2630" y="175" /><di:waypoint x="2630" y="90" /><di:waypoint x="2230" y="90" /><di:waypoint x="2230" y="175" />
+        <di:waypoint x="2630" y="175" /><di:waypoint x="2630" y="90" /><di:waypoint x="2340" y="90" /><di:waypoint x="2340" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToNotifySplit_di" bpmnElement="Flow_ToNotifySplit">
+        <di:waypoint x="2810" y="200" /><di:waypoint x="2855" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToNotifyCustomer_di" bpmnElement="Flow_ToNotifyCustomer">
-        <di:waypoint x="2810" y="200" /><di:waypoint x="2870" y="200" />
+        <di:waypoint x="2880" y="175" /><di:waypoint x="2880" y="120" /><di:waypoint x="2950" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToNotifyBank_di" bpmnElement="Flow_ToNotifyBank">
+        <di:waypoint x="2880" y="225" /><di:waypoint x="2880" y="280" /><di:waypoint x="2950" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CustomerNotified_di" bpmnElement="Flow_CustomerNotified">
+        <di:waypoint x="3050" y="120" /><di:waypoint x="3130" y="120" /><di:waypoint x="3130" y="175" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BankNotified_di" bpmnElement="Flow_BankNotified">
+        <di:waypoint x="3050" y="280" /><di:waypoint x="3130" y="280" /><di:waypoint x="3130" y="225" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToEndIssued_di" bpmnElement="Flow_ToEndIssued">
-        <di:waypoint x="2970" y="200" /><di:waypoint x="3032" y="200" />
+        <di:waypoint x="3155" y="200" /><di:waypoint x="3212" y="200" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_ToRecordRejection_di" bpmnElement="Flow_ToRecordRejection">
         <di:waypoint x="2255" y="420" /><di:waypoint x="2290" y="420" />
